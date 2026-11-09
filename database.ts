@@ -38,7 +38,8 @@ db.exec(`
     status_id TEXT,
     manager_id INTEGER,
     is_quality BOOLEAN DEFAULT 0,
-    refusal_reason_id INTEGER
+    refusal_reason_id INTEGER,
+    created_at DATETIME
   );
 
   CREATE TABLE IF NOT EXISTS deals (
@@ -53,7 +54,52 @@ db.exec(`
     product_field TEXT,
     amount REAL DEFAULT 0,
     payment_source TEXT,
-    okved TEXT
+    okved TEXT,
+    created_at DATETIME
+  );
+
+  CREATE TABLE IF NOT EXISTS bases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    main_product_id INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS segments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    entity TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS refusal_reasons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS okved (
+    code TEXT PRIMARY KEY,
+    name TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS daily_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    manager_id INTEGER,
+    base_id INTEGER,
+    product_id INTEGER,
+    work_type TEXT,
+    total_calls INTEGER DEFAULT 0,
+    valid_conversations INTEGER DEFAULT 0,
+    unique_leads INTEGER DEFAULT 0,
+    quality_leads INTEGER DEFAULT 0,
+    transfers INTEGER DEFAULT 0,
+    paid_deals INTEGER DEFAULT 0,
+    amount_sum REAL DEFAULT 0,
+    UNIQUE(date, manager_id, base_id, product_id, work_type)
   );
 `);
 

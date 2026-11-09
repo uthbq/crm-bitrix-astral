@@ -238,8 +238,8 @@ app.get('/api/sync-leads', async (req: any, res: any) => {
         }
 
         const stmt = db.prepare(`
-            INSERT INTO leads (bitrix_lead_id, inn, status_id, manager_id, segmentation) 
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO leads (bitrix_lead_id, inn, status_id, manager_id, segmentation, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(bitrix_lead_id) DO UPDATE SET
                 status_id = excluded.status_id,
                 manager_id = excluded.manager_id,
@@ -256,7 +256,8 @@ app.get('/api/sync-leads', async (req: any, res: any) => {
                     lead.inn || null,
                     statusId,
                     lead.assignedById,
-                    segmentsStr
+                    segmentsStr,
+                    lead.dateCreate || null
                 );
             }
         });
@@ -288,8 +289,8 @@ app.get('/api/sync-deals', async (req: any, res: any) => {
         }
 
         const stmt = db.prepare(`
-            INSERT INTO deals (bitrix_deal_id, lead_id, manager_id, inn, stage_id, amount) 
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO deals (bitrix_deal_id, lead_id, manager_id, inn, stage_id, amount, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(bitrix_deal_id) DO UPDATE SET
                 stage_id = excluded.stage_id,
                 manager_id = excluded.manager_id,
@@ -306,7 +307,8 @@ app.get('/api/sync-deals', async (req: any, res: any) => {
                     deal.assignedById,
                     deal.inn || null,
                     stageId,
-                    deal.amount || 0
+                    deal.amount || 0,
+                    deal.dateCreate || null
                 );
             }
         });
@@ -344,6 +346,194 @@ app.post('/api/users', authenticateToken, async (req: any, res: any): Promise<an
         res.status(400).json({ error: 'Ошибка сохранения: ' + err.message });
     }
 });
+app.get('/api/sync-segments', async (req: any, res: any) => {
+    try {
+        const response = await fetch(`${process.env.API_URL}/segments`, {
+            headers: {
+                'Authorization': `Bearer ${process.env.API_TOKEN}`
+            }
+        });
+        
+        const data = await response.json();
+
+        if (!data.ok || !data.segments) {
+            return res.status(400).json({ error: 'Ошибка от API Битрикса' });
+        }
+
+        const stmt = db.prepare(`
+            INSERT INTO segments (name, entity) 
+            VALUES (?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                entity = excluded.entity
+        `);
+
+        const insertMany = db.transaction((segments) => {
+            for (const segment of segments) {
+                stmt.run(segment.name, segment.entity);
+            }
+        });
+
+        insertMany(data.segments);
+
+        res.json({ 
+            message: 'Синхронизация сегментов успешна', 
+            total_fetched: data.segments.length
+        });
+
+    } catch (error) {
+        console.error('Ошибка синхронизации сегментов:', error);
+        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    }
+});
+
+app.get('/api/calculate-daily-stats', (req: any, res: any) => {
+    try {
+        const calculateAll = db.transaction(() => {
+            db.prepare(`
+                INSERT INTO daily_stats (
+                    date, manager_id, base_id, product_id, work_type, total_calls, valid_conversations
+                )
+                SELECT 
+                    date(started_at), manager_id, 0, 0, 'primary', 
+                    COUNT(id), SUM(CASE WHEN duration_seconds >= 44 THEN 1 ELSE 0 END)
+                FROM calls WHERE direction = 'outgoing' AND manager_id IS NOT NULL
+                GROUP BY date(started_at), manager_id
+                ON CONFLICT(date, manager_id, base_id, product_id, work_type) DO UPDATE SET
+                    total_calls = excluded.total_calls,
+                    valid_conversations = excluded.valid_conversations
+            `).run();
+
+            db.prepare(`
+                INSERT INTO daily_stats (
+                    date, manager_id, base_id, product_id, work_type, unique_leads, quality_leads
+                )
+                SELECT 
+                    date(created_at), manager_id, 0, 0, 'primary', 
+                    COUNT(id), SUM(CASE WHEN is_quality = 1 THEN 1 ELSE 0 END)
+                FROM leads WHERE manager_id IS NOT NULL AND created_at IS NOT NULL
+                GROUP BY date(created_at), manager_id
+                ON CONFLICT(date, manager_id, base_id, product_id, work_type) DO UPDATE SET
+                    unique_leads = excluded.unique_leads,
+                    quality_leads = excluded.quality_leads
+            `).run();
+
+            db.prepare(`
+                INSERT INTO daily_stats (
+                    date, manager_id, base_id, product_id, work_type, paid_deals, amount_sum
+                )
+                SELECT 
+                    date(created_at), manager_id, 0, 0, 'primary', 
+                    COUNT(id), SUM(amount)
+                FROM deals WHERE manager_id IS NOT NULL AND created_at IS NOT NULL AND amount > 0
+                GROUP BY date(created_at), manager_id
+                ON CONFLICT(date, manager_id, base_id, product_id, work_type) DO UPDATE SET
+                    paid_deals = excluded.paid_deals,
+                    amount_sum = excluded.amount_sum
+            `).run();
+        });
+
+        calculateAll();
+        res.json({ message: 'Агрегация всех данных успешно завершена' });
+    } catch (error) {
+        console.error('Ошибка агрегации:', error);
+        res.status(500).json({ error: 'Ошибка агрегации данных' });
+    }
+});
+
+app.get('/api/dashboard', (req: any, res: any) => {
+    try {
+        const managerId = req.query.manager_id;
+        
+        let query = `
+            SELECT 
+                date,
+                SUM(total_calls) as total_outbound,
+                SUM(valid_conversations) as valid_conversations,
+                SUM(unique_leads) as unique_leads,
+                SUM(quality_leads) as quality_leads,
+                SUM(paid_deals) as paid_deals,
+                SUM(amount_sum) as amount_sum
+            FROM daily_stats
+        `;
+        
+        const params: any[] = [];
+
+        if (managerId) {
+            query += ` WHERE manager_id = ?`;
+            params.push(managerId);
+        }
+
+        query += ` GROUP BY date ORDER BY date DESC LIMIT 30`;
+
+        const stmt = db.prepare(query);
+        res.json(stmt.all(...params));
+    } catch (error) {
+        console.error('Ошибка выгрузки дашборда:', error);
+        res.status(500).json({ error: 'Ошибка получения данных' });
+    }
+});
+app.get('/api/products', (req: any, res: any) => {
+    try {
+        const products = db.prepare('SELECT * FROM products').all();
+        res.json(products);
+    } catch (error) {
+        res.status(500).json({ error: 'Ошибка получения списка продуктов' });
+    }
+});
+
+app.post('/api/products', (req: any, res: any) => {
+    try {
+        const { name } = req.body;
+        if (!name) return res.status(400).json({ error: 'Имя продукта обязательно' });
+        
+        const info = db.prepare('INSERT INTO products (name) VALUES (?)').run(name);
+        res.json({ id: info.lastInsertRowid, name, message: 'Продукт успешно добавлен' });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message.includes('UNIQUE') ? 'Такой продукт уже существует' : 'Ошибка создания' });
+    }
+});
+
+app.delete('/api/products/:id', (req: any, res: any) => {
+    try {
+        db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
+        res.json({ message: 'Продукт удален' });
+    } catch (error) {
+        res.status(500).json({ error: 'Ошибка удаления' });
+    }
+});
+
+app.get('/api/bases', (req: any, res: any) => {
+    try {
+        const bases = db.prepare('SELECT * FROM bases').all();
+        res.json(bases);
+    } catch (error) {
+        res.status(500).json({ error: 'Ошибка получения списка баз' });
+    }
+});
+
+app.post('/api/bases', (req: any, res: any) => {
+    try {
+        const { name, main_product_id } = req.body;
+        if (!name) return res.status(400).json({ error: 'Имя базы обязательно' });
+
+        const info = db.prepare('INSERT INTO bases (name, main_product_id) VALUES (?, ?)')
+                       .run(name, main_product_id || null);
+        res.json({ id: info.lastInsertRowid, name, main_product_id, message: 'База успешно добавлена' });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message.includes('UNIQUE') ? 'Такая база уже существует' : 'Ошибка создания' });
+    }
+});
+
+app.delete('/api/bases/:id', (req: any, res: any) => {
+    try {
+        db.prepare('DELETE FROM bases WHERE id = ?').run(req.params.id);
+        res.json({ message: 'База удалена' });
+    } catch (error) {
+        res.status(500).json({ error: 'Ошибка удаления' });
+    }
+});
+
+
 
 app.listen(3000, () => {
     console.log('Сервер запущен на http://localhost:3000');
