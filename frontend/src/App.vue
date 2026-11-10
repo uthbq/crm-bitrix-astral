@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import ManagerDashboard from './components/ManagerDashboard.vue';
+import DictionariesManager from './components/DictionariesManager.vue';
+import DirectorDashboard from './components/DirectorDashboard.vue';
+import PlansManager from './components/PlansManager.vue';
 
 const token = ref('');
 const authError = ref('');
@@ -16,6 +19,22 @@ const newUser = ref({ login: '', password: '', role: 'MANAGER', bitrix_id: '' })
 const activeTab = ref('dashboard'); 
 const userRole = ref('');
 const currentManagerId = ref('');
+
+const searchQuery = ref('');
+const showDropdown = ref(false);
+
+const filteredBitrixUsers = computed(() => {
+  if (!searchQuery.value) return bitrixUsers.value;
+  const query = searchQuery.value.toLowerCase();
+  return bitrixUsers.value.filter(u => u.name && u.name.toLowerCase().includes(query));
+});
+
+const selectUser = (user: any) => {
+  newUser.value.bitrix_id = user.id;
+  searchQuery.value = user.name;
+  showDropdown.value = false;
+  onUserSelect();
+};
 
 const transliterate = (text: string) => {
   const ru = 'А-а-Б-б-В-в-Г-г-Д-д-Е-е-Ё-ё-Ж-ж-З-з-И-и-Й-й-К-к-Л-л-М-м-Н-н-О-о-П-п-Р-р-С-с-Т-т-У-у-Ф-ф-Х-х-Ц-ц-Ч-ч-Ш-ш-Щ-щ-Ъ-ъ-Ы-ы-Ь-ь-Э-э-Ю-ю-Я-я'.split('-');
@@ -92,6 +111,10 @@ const login = async () => {
 };
 
 const createUser = async () => {
+  if (!newUser.value.bitrix_id) {
+    alert('Пожалуйста, выберите сотрудника из списка!');
+    return;
+  }
   const response = await fetch('http://localhost:3000/api/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token.value}` },
@@ -99,6 +122,10 @@ const createUser = async () => {
   });
   const data = await response.json();
   alert(data.message || data.error);
+  if (response.ok) {
+    searchQuery.value = '';
+    newUser.value = { login: '', password: '', role: 'MANAGER', bitrix_id: '' };
+  }
 };
 
 const logout = () => {
@@ -127,7 +154,7 @@ const logout = () => {
         @click="activeTab = 'dashboard'" 
         :style="{ background: activeTab === 'dashboard' ? '#34495e' : 'transparent', border: 'none', color: 'white', textAlign: 'left', padding: '12px 15px', borderRadius: '6px', cursor: 'pointer', fontSize: '15px', marginBottom: '10px' }"
       >
-        📊 Мой день
+        📊 Дашборд
       </button>
       
       <button 
@@ -138,7 +165,21 @@ const logout = () => {
         👥 Сотрудники
       </button>
 
-      <button style="background: transparent; border: none; color: #7f8c8d; text-align: left; padding: 12px 15px; border-radius: 6px; font-size: 15px;">📞 Звонки (скоро)</button>
+      <button 
+        v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
+        @click="activeTab = 'plans'" 
+        :style="{ background: activeTab === 'plans' ? '#34495e' : 'transparent', border: 'none', color: 'white', textAlign: 'left', padding: '12px 15px', borderRadius: '6px', cursor: 'pointer', fontSize: '15px', marginBottom: '10px' }"
+      >
+        📅 Планы и Нормативы
+      </button>
+
+      <button 
+        v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
+        @click="activeTab = 'dictionaries'" 
+        :style="{ background: activeTab === 'dictionaries' ? '#34495e' : 'transparent', border: 'none', color: 'white', textAlign: 'left', padding: '12px 15px', borderRadius: '6px', cursor: 'pointer', fontSize: '15px', marginBottom: '10px' }"
+      >
+        📁 Справочники
+      </button>
       
       <button @click="logout" style="margin-top: auto; background: #e74c3c; border: none; color: white; padding: 12px; border-radius: 6px; cursor: pointer; font-weight: bold;">
         Выйти
@@ -149,16 +190,13 @@ const logout = () => {
       
       <div v-if="!token" style="background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 350px; margin-top: 10vh;">
         <h2 style="text-align: center; margin-top: 0; color: #2c3e50;">Вход в систему</h2>
-        
         <input v-model="loginUser" placeholder="Логин" style="width: 100%; padding: 12px; margin-bottom: 15px; background: #2c3e50; color: white; border: 1px solid #34495e; border-radius: 6px; box-sizing: border-box; outline: none;" />
-        
         <div style="display: flex; margin-bottom: 20px;">
           <input v-model="loginPass" :type="showLoginPass ? 'text' : 'password'" placeholder="Пароль" style="flex: 1; padding: 12px; background: #2c3e50; color: white; border: 1px solid #34495e; border-radius: 6px 0 0 6px; box-sizing: border-box; outline: none;" @keyup.enter="login" />
           <button @click="showLoginPass = !showLoginPass" style="background: #34495e; border: none; color: white; padding: 0 12px; border-radius: 0 6px 6px 0; cursor: pointer;">
             {{ showLoginPass ? '🙈' : '👁️' }}
           </button>
         </div>
-
         <button @click="login" style="width: 100%; background: #3498db; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold;">Войти</button>
         <p style="color: #e74c3c; text-align: center; margin-bottom: 0; min-height: 20px; margin-top: 10px;">{{ authError }}</p>
       </div>
@@ -168,12 +206,32 @@ const logout = () => {
         <div v-if="activeTab === 'users' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 500px;">
           <h3 style="margin-top: 0; color: #2c3e50; border-bottom: 2px solid #f5f6fa; padding-bottom: 15px;">Добавление менеджера</h3>
           
-          <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Выберите из API Битрикс24</label>
-          <select v-model="newUser.bitrix_id" @change="onUserSelect" style="width: 100%; padding: 12px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; outline: none;">
-            <option disabled value="">Выберите сотрудника</option>
-            <option v-for="user in bitrixUsers" :key="user.id" :value="user.id">{{ user.name }}</option>
-          </select>
-          
+          <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Поиск по сотрудникам Битрикс24</label>
+          <div style="position: relative; margin-bottom: 20px;">
+            <input 
+              v-model="searchQuery" 
+              @focus="showDropdown = true" 
+              @blur="setTimeout(() => showDropdown = false, 200)"
+              placeholder="Начните вводить имя..." 
+              style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; outline: none; font-size: 15px;" 
+            />
+            
+            <div v-if="showDropdown && filteredBitrixUsers.length" class="dropdown-list">
+              <div 
+                v-for="user in filteredBitrixUsers" 
+                :key="user.id" 
+                @click="selectUser(user)" 
+                class="dropdown-item"
+              >
+                {{ user.name }} <span style="color: #95a5a6; font-size: 12px;">(ID: {{ user.id }})</span>
+              </div>
+            </div>
+            
+            <div v-if="showDropdown && !filteredBitrixUsers.length" class="dropdown-list" style="padding: 12px; color: #7f8c8d;">
+              Сотрудник не найден
+            </div>
+          </div>
+
           <div style="display: flex; gap: 15px; margin-bottom: 20px;">
             <div style="flex: 1;">
               <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Системный логин</label>
@@ -183,28 +241,35 @@ const logout = () => {
               <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Временный пароль</label>
               <div style="display: flex;">
                 <input v-model="newUser.password" :type="showNewUserPass ? 'text' : 'password'" style="flex: 1; padding: 12px; background: #2c3e50; color: white; border: 1px solid #34495e; border-radius: 6px 0 0 6px; box-sizing: border-box; outline: none;" />
-                <button @click="showNewUserPass = !showNewUserPass" style="background: #34495e; border: none; color: white; padding: 0 12px; border-radius: 0 6px 6px 0; cursor: pointer;">
-                  {{ showNewUserPass ? '🙈' : '👁️' }}
-                </button>
+                <button @click="showNewUserPass = !showNewUserPass" style="background: #34495e; border: none; color: white; padding: 0 12px; border-radius: 0 6px 6px 0; cursor: pointer;">{{ showNewUserPass ? '🙈' : '👁️' }}</button>
               </div>
             </div>
           </div>
-
+          
           <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Уровень доступа</label>
           <select v-model="newUser.role" style="width: 100%; padding: 12px; margin-bottom: 25px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; outline: none;">
             <option value="MANAGER">Менеджер</option>
             <option value="HEAD_OF_DEPT">Руководитель отдела</option>
             <option value="DIRECTOR">Директор</option>
           </select>
-          
           <button @click="createUser" style="width: 100%; background: #2ecc71; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold;">Сохранить в базу</button>
         </div>
 
+        <div v-if="activeTab === 'plans' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" style="width: 100%; max-width: 1000px; background: transparent; padding: 0;">
+          <PlansManager />
+        </div>
+        <div v-if="activeTab === 'dictionaries' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" style="width: 100%; max-width: 1000px; background: transparent; padding: 0;">
+          <DictionariesManager />
+        </div>
         <div v-if="activeTab === 'dashboard'" style="width: 100%; max-width: 1000px; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
-          <ManagerDashboard :managerId="currentManagerId" />
+          <ManagerDashboard v-if="userRole === 'MANAGER'" :managerId="currentManagerId" />
+          <DirectorDashboard v-else />
         </div>
 
       </div>
     </div>
   </div>
 </template>
+
+.dropdown-list {
+  position: absolute;

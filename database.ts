@@ -15,6 +15,7 @@ db.exec(`
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL,
     department_id INTEGER,
+    qualification TEXT DEFAULT 'обычный',
     FOREIGN KEY (department_id) REFERENCES departments(id)
   );
 
@@ -28,6 +29,7 @@ db.exec(`
     owner_type TEXT,
     owner_id INTEGER
   );
+
   CREATE TABLE IF NOT EXISTS leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bitrix_lead_id INTEGER UNIQUE NOT NULL,
@@ -100,6 +102,16 @@ db.exec(`
     paid_deals INTEGER DEFAULT 0,
     amount_sum REAL DEFAULT 0,
     UNIQUE(date, manager_id, base_id, product_id, work_type)
+  );
+
+  CREATE TABLE IF NOT EXISTS plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    manager_id INTEGER,
+    month TEXT NOT NULL,
+    working_days INTEGER DEFAULT 21,
+    calls_norm INTEGER DEFAULT 0,
+    leads_norm INTEGER DEFAULT 0,
+    UNIQUE(manager_id, month)
   );
 `);
 

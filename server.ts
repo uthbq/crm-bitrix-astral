@@ -442,9 +442,18 @@ app.get('/api/calculate-daily-stats', (req: any, res: any) => {
 
 app.get('/api/dashboard', (req: any, res: any) => {
     try {
-        const managerId = req.query.manager_id;
-        
-        let query = `
+        const { manager_id, startDate, endDate, base_id } = req.query;
+        let where = [];
+        let params: any[] = [];
+
+        if (manager_id) { where.push('manager_id = ?'); params.push(manager_id); }
+        if (startDate) { where.push('date >= ?'); params.push(startDate); }
+        if (endDate) { where.push('date <= ?'); params.push(endDate); }
+        if (base_id) { where.push('base_id = ?'); params.push(base_id); }
+
+        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+        const stats = db.prepare(`
             SELECT 
                 date,
                 SUM(total_calls) as total_outbound,
@@ -454,22 +463,13 @@ app.get('/api/dashboard', (req: any, res: any) => {
                 SUM(paid_deals) as paid_deals,
                 SUM(amount_sum) as amount_sum
             FROM daily_stats
-        `;
-        
-        const params: any[] = [];
-
-        if (managerId) {
-            query += ` WHERE manager_id = ?`;
-            params.push(managerId);
-        }
-
-        query += ` GROUP BY date ORDER BY date DESC LIMIT 30`;
-
-        const stmt = db.prepare(query);
-        res.json(stmt.all(...params));
+            ${whereClause}
+            GROUP BY date
+            ORDER BY date DESC
+        `).all(...params);
+        res.json(stats);
     } catch (error) {
-        console.error('Ошибка выгрузки дашборда:', error);
-        res.status(500).json({ error: 'Ошибка получения данных' });
+        res.status(500).json({ error: 'Ошибка дашборда' });
     }
 });
 app.get('/api/products', (req: any, res: any) => {
@@ -533,7 +533,186 @@ app.delete('/api/bases/:id', (req: any, res: any) => {
     }
 });
 
+app.get('/api/analytics/managers', (req: any, res: any) => {
+    try {
+        const { startDate, endDate, base_id } = req.query;
+        let where = [];
+        let params: any[] = [];
 
+        if (startDate) { where.push('ds.date >= ?'); params.push(startDate); }
+        if (endDate) { where.push('ds.date <= ?'); params.push(endDate); }
+        if (base_id) { where.push('ds.base_id = ?'); params.push(base_id); }
+
+        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+        const stats = db.prepare(`
+            SELECT 
+                ds.manager_id,
+                COALESCE(u.login, 'ID ' || ds.manager_id) as manager_name,
+                SUM(ds.total_calls) as total_calls,
+                SUM(ds.valid_conversations) as valid_conversations,
+                SUM(ds.unique_leads) as unique_leads,
+                SUM(ds.quality_leads) as quality_leads,
+                SUM(ds.paid_deals) as paid_deals,
+                SUM(ds.amount_sum) as amount_sum
+            FROM daily_stats ds
+            LEFT JOIN users u ON ds.manager_id = u.bitrix_id
+            ${whereClause}
+            GROUP BY ds.manager_id
+            ORDER BY amount_sum DESC, quality_leads DESC, valid_conversations DESC, total_calls DESC
+        `).all(...params);
+        res.json(stats);
+    } catch (error) {
+        console.error('Ошибка рейтинга:', error);
+        res.status(500).json({ error: 'Ошибка получения рейтинга' });
+    }
+});
+
+app.get('/api/analytics/bases', (req: any, res: any) => {
+    try {
+        const { startDate, endDate } = req.query;
+        let where = [];
+        let params: any[] = [];
+
+        if (startDate) { where.push('ds.date >= ?'); params.push(startDate); }
+        if (endDate) { where.push('ds.date <= ?'); params.push(endDate); }
+
+        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+        const stats = db.prepare(`
+            SELECT 
+                ds.base_id,
+                COALESCE(b.name, 'Без базы (ID ' || ds.base_id || ')') as base_name,
+                SUM(ds.total_calls) as total_calls,
+                SUM(ds.quality_leads) as quality_leads,
+                SUM(ds.paid_deals) as paid_deals,
+                SUM(ds.amount_sum) as amount_sum
+            FROM daily_stats ds
+            LEFT JOIN bases b ON ds.base_id = b.id
+            ${whereClause}
+            GROUP BY ds.base_id
+            ORDER BY amount_sum DESC, quality_leads DESC, total_calls DESC
+        `).all(...params);
+        res.json(stats);
+    } catch (error) {
+        console.error('Ошибка аналитики баз:', error);
+        res.status(500).json({ error: 'Ошибка получения аналитики баз' });
+    }
+});
+
+app.get('/api/plans', (req: any, res: any) => {
+    try {
+        const { manager_id, month } = req.query;
+        if (!manager_id || !month) {
+            return res.status(400).json({ error: 'Нужны manager_id и month' });
+        }
+
+        const plan = db.prepare('SELECT * FROM plans WHERE manager_id = ? AND month = ?').get(manager_id, month);
+        res.json(plan || { manager_id, month, working_days: 21, calls_norm: 0, leads_norm: 0 });
+    } catch (error) {
+        res.status(500).json({ error: 'Ошибка получения плана' });
+    }
+});
+
+app.post('/api/plans', (req: any, res: any) => {
+    try {
+        const { manager_id, month, working_days, calls_norm, leads_norm } = req.body;
+        if (!manager_id || !month) {
+            return res.status(400).json({ error: 'Обязательные поля: manager_id, month' });
+        }
+
+        db.prepare(`
+            INSERT INTO plans (manager_id, month, working_days, calls_norm, leads_norm)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(month, manager_id) DO UPDATE SET
+                working_days = excluded.working_days,
+                calls_norm = excluded.calls_norm,
+                leads_norm = excluded.leads_norm
+        `).run(manager_id, month, working_days || 21, calls_norm || 0, leads_norm || 0);
+
+        res.json({ message: 'План успешно сохранен' });
+    } catch (error) {
+        console.error('Ошибка сохранения плана:', error);
+        res.status(500).json({ error: 'Ошибка сохранения плана' });
+    }
+});
+
+app.get('/api/users', (req: any, res: any) => {
+    try {
+        const users = db.prepare(`
+            SELECT id, bitrix_id, login, role 
+            FROM users 
+            WHERE role IN ('MANAGER', 'HEAD_OF_DEPT')
+        `).all();
+        res.json(users);
+    } catch (error) {
+        console.error('Ошибка:', error);
+        res.status(500).json({ error: 'Ошибка получения пользователей' });
+    }
+});
+
+app.get('/api/refusal-reasons', (req: any, res: any) => {
+    try {
+        const reasons = db.prepare('SELECT * FROM refusal_reasons').all();
+        res.json(reasons);
+    } catch (error) {
+        res.status(500).json({ error: 'Ошибка загрузки причин отказов' });
+    }
+});
+
+app.post('/api/refusal-reasons', (req: any, res: any) => {
+    try {
+        const { name } = req.body;
+        if (!name) return res.status(400).json({ error: 'Название обязательно' });
+        
+        db.prepare('INSERT INTO refusal_reasons (name) VALUES (?)').run(name.trim());
+        res.json({ message: 'Причина успешно добавлена' });
+    } catch (error: any) {
+        if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+            res.status(400).json({ error: 'Такая причина уже существует' });
+        } else {
+            res.status(500).json({ error: 'Ошибка сохранения' });
+        }
+    }
+});
+
+app.delete('/api/refusal-reasons/:id', (req: any, res: any) => {
+    try {
+        db.prepare('DELETE FROM refusal_reasons WHERE id = ?').run(req.params.id);
+        res.json({ message: 'Причина удалена' });
+    } catch (error) {
+        res.status(500).json({ error: 'Ошибка удаления' });
+    }
+});
+
+app.get('/api/analytics/refusals', (req: any, res: any) => {
+    try {
+        const { startDate, endDate } = req.query;
+        let where = ['l.refusal_reason_id IS NOT NULL'];
+        let params: any[] = [];
+
+        if (startDate) { where.push('date(l.created_at) >= ?'); params.push(startDate); }
+        if (endDate) { where.push('date(l.created_at) <= ?'); params.push(endDate); }
+
+        const whereClause = 'WHERE ' + where.join(' AND ');
+
+        const stats = db.prepare(`
+            SELECT 
+                r.name as reason_name,
+                COUNT(l.id) as count
+            FROM leads l
+            JOIN refusal_reasons r ON l.refusal_reason_id = r.id
+            ${whereClause}
+            GROUP BY r.id
+            ORDER BY count DESC
+        `).all(...params);
+        
+        res.json(stats);
+    } catch (error) {
+        console.error('Ошибка аналитики отказов:', error);
+        res.status(500).json({ error: 'Ошибка получения аналитики отказов' });
+    }
+});
 
 app.listen(3000, () => {
     console.log('Сервер запущен на http://localhost:3000');
