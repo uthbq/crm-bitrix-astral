@@ -137,83 +137,82 @@ const logout = () => {
 </script>
 
 <template>
-  <div style="display: flex; min-height: 100vh; font-family: Arial, sans-serif; margin: -8px;">
+  <div class="app-layout">
     
-    <div v-if="token" style="width: 260px; background-color: #2c3e50; color: white; display: flex; flex-direction: column; padding: 20px;">
-      <h2 style="margin-top: 0; padding-bottom: 20px; border-bottom: 1px solid #34495e;">CRM System</h2>
+    <!-- Боковое меню -->
+    <div v-if="token" class="sidebar">
+      <h2 class="sidebar-title">CRM System</h2>
       
-      <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 30px;">
-        <div style="width: 45px; height: 45px; background: #3498db; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 20px;">👤</div>
+      <div class="user-profile">
+        <div class="avatar">👤</div>
         <div>
-          <div style="font-weight: bold; font-size: 16px;">Мой профиль</div>
-          <div style="font-size: 13px; color: #bdc3c7;">{{ loginUser }} ({{ userRole }})</div>
+          <div class="user-name">Мой профиль</div>
+          <div class="user-role">{{ loginUser }} ({{ userRole }})</div>
         </div>
       </div>
       
-      <button 
-        @click="activeTab = 'dashboard'" 
-        :style="{ background: activeTab === 'dashboard' ? '#34495e' : 'transparent', border: 'none', color: 'white', textAlign: 'left', padding: '12px 15px', borderRadius: '6px', cursor: 'pointer', fontSize: '15px', marginBottom: '10px' }"
-      >
-        📊 Дашборд
-      </button>
-      
-      <button 
-        v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
-        @click="activeTab = 'users'" 
-        :style="{ background: activeTab === 'users' ? '#34495e' : 'transparent', border: 'none', color: 'white', textAlign: 'left', padding: '12px 15px', borderRadius: '6px', cursor: 'pointer', fontSize: '15px', marginBottom: '10px' }"
-      >
-        👥 Сотрудники
-      </button>
+      <nav class="nav-menu">
+        <button 
+          @click="activeTab = 'dashboard'" 
+          :class="['nav-btn', { active: activeTab === 'dashboard' }]"
+        >
+          📊 Дашборд
+        </button>
+        
+        <button 
+          v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
+          @click="activeTab = 'users'" 
+          :class="['nav-btn', { active: activeTab === 'users' }]"
+        >
+          👥 Сотрудники
+        </button>
 
-      <button 
-        v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
-        @click="activeTab = 'plans'" 
-        :style="{ background: activeTab === 'plans' ? '#34495e' : 'transparent', border: 'none', color: 'white', textAlign: 'left', padding: '12px 15px', borderRadius: '6px', cursor: 'pointer', fontSize: '15px', marginBottom: '10px' }"
-      >
-        📅 Планы и Нормативы
-      </button>
+        <button 
+          v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
+          @click="activeTab = 'plans'" 
+          :class="['nav-btn', { active: activeTab === 'plans' }]"
+        >
+          📅 Планы и Нормативы
+        </button>
 
-      <button 
-        v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
-        @click="activeTab = 'dictionaries'" 
-        :style="{ background: activeTab === 'dictionaries' ? '#34495e' : 'transparent', border: 'none', color: 'white', textAlign: 'left', padding: '12px 15px', borderRadius: '6px', cursor: 'pointer', fontSize: '15px', marginBottom: '10px' }"
-      >
-        📁 Справочники
-      </button>
+        <button 
+          v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
+          @click="activeTab = 'dictionaries'" 
+          :class="['nav-btn', { active: activeTab === 'dictionaries' }]"
+        >
+          📁 Справочники
+        </button>
+      </nav>
       
-      <button @click="logout" style="margin-top: auto; background: #e74c3c; border: none; color: white; padding: 12px; border-radius: 6px; cursor: pointer; font-weight: bold;">
-        Выйти
-      </button>
+      <button @click="logout" class="btn-logout">Выйти</button>
     </div>
 
-    <div style="flex: 1; background-color: #f5f6fa; padding: 40px; display: flex; justify-content: center; align-items: flex-start;">
+    <div class="main-content">
       
-      <div v-if="!token" style="background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 350px; margin-top: 10vh;">
-        <h2 style="text-align: center; margin-top: 0; color: #2c3e50;">Вход в систему</h2>
-        <input v-model="loginUser" placeholder="Логин" style="width: 100%; padding: 12px; margin-bottom: 15px; background: #2c3e50; color: white; border: 1px solid #34495e; border-radius: 6px; box-sizing: border-box; outline: none;" />
-        <div style="display: flex; margin-bottom: 20px;">
-          <input v-model="loginPass" :type="showLoginPass ? 'text' : 'password'" placeholder="Пароль" style="flex: 1; padding: 12px; background: #2c3e50; color: white; border: 1px solid #34495e; border-radius: 6px 0 0 6px; box-sizing: border-box; outline: none;" @keyup.enter="login" />
-          <button @click="showLoginPass = !showLoginPass" style="background: #34495e; border: none; color: white; padding: 0 12px; border-radius: 0 6px 6px 0; cursor: pointer;">
-            {{ showLoginPass ? '🙈' : '👁️' }}
-          </button>
+      <div v-if="!token" class="login-card">
+        <h2 class="login-title">Вход в систему</h2>
+        <input v-model="loginUser" placeholder="Логин" class="input-dark" />
+        <div class="password-input">
+          <input v-model="loginPass" :type="showLoginPass ? 'text' : 'password'" placeholder="Пароль" class="input-dark no-margin-bottom" @keyup.enter="login" />
+          <button @click="showLoginPass = !showLoginPass" class="btn-eye">{{ showLoginPass ? '🙈' : '👁️' }}</button>
         </div>
-        <button @click="login" style="width: 100%; background: #3498db; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold;">Войти</button>
-        <p style="color: #e74c3c; text-align: center; margin-bottom: 0; min-height: 20px; margin-top: 10px;">{{ authError }}</p>
+        <button @click="login" class="btn-primary w-full">Войти</button>
+        <p class="error-msg">{{ authError }}</p>
       </div>
 
-      <div v-else style="width: 100%; display: flex; justify-content: center;">
+      <div v-else class="content-wrapper">
         
-        <div v-if="activeTab === 'users' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 500px;">
-          <h3 style="margin-top: 0; color: #2c3e50; border-bottom: 2px solid #f5f6fa; padding-bottom: 15px;">Добавление менеджера</h3>
+        <div v-if="activeTab === 'users' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="card add-user-card">
+          <h3 class="card-title">Добавление менеджера</h3>
           
-          <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Поиск по сотрудникам Битрикс24</label>
-          <div style="position: relative; margin-bottom: 20px;">
+          <label class="form-label">Поиск по сотрудникам Битрикс24</label>
+          <div class="autocomplete-wrapper">
             <input 
               v-model="searchQuery" 
               @focus="showDropdown = true" 
               @blur="setTimeout(() => showDropdown = false, 200)"
               placeholder="Начните вводить имя..." 
-              style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; outline: none; font-size: 15px;" 
+              class="input-light"
             />
             
             <div v-if="showDropdown && filteredBitrixUsers.length" class="dropdown-list">
@@ -223,45 +222,47 @@ const logout = () => {
                 @click="selectUser(user)" 
                 class="dropdown-item"
               >
-                {{ user.name }} <span style="color: #95a5a6; font-size: 12px;">(ID: {{ user.id }})</span>
+                {{ user.name }} <span class="text-muted">(ID: {{ user.id }})</span>
               </div>
             </div>
             
-            <div v-if="showDropdown && !filteredBitrixUsers.length" class="dropdown-list" style="padding: 12px; color: #7f8c8d;">
+            <div v-if="showDropdown && !filteredBitrixUsers.length" class="dropdown-list empty-state">
               Сотрудник не найден
             </div>
           </div>
 
-          <div style="display: flex; gap: 15px; margin-bottom: 20px;">
-            <div style="flex: 1;">
-              <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Системный логин</label>
-              <input v-model="newUser.login" placeholder="Генерируется..." style="width: 100%; padding: 12px; background: #2c3e50; color: white; border: 1px solid #34495e; border-radius: 6px; box-sizing: border-box; outline: none;" />
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Системный логин</label>
+              <input v-model="newUser.login" placeholder="Генерируется..." class="input-dark" />
             </div>
-            <div style="flex: 1;">
-              <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Временный пароль</label>
-              <div style="display: flex;">
-                <input v-model="newUser.password" :type="showNewUserPass ? 'text' : 'password'" style="flex: 1; padding: 12px; background: #2c3e50; color: white; border: 1px solid #34495e; border-radius: 6px 0 0 6px; box-sizing: border-box; outline: none;" />
-                <button @click="showNewUserPass = !showNewUserPass" style="background: #34495e; border: none; color: white; padding: 0 12px; border-radius: 0 6px 6px 0; cursor: pointer;">{{ showNewUserPass ? '🙈' : '👁️' }}</button>
+            <div class="form-group">
+              <label class="form-label">Временный пароль</label>
+              <div class="password-input">
+                <input v-model="newUser.password" :type="showNewUserPass ? 'text' : 'password'" class="input-dark no-margin-bottom" />
+                <button @click="showNewUserPass = !showNewUserPass" class="btn-eye">{{ showNewUserPass ? '🙈' : '👁️' }}</button>
               </div>
             </div>
           </div>
           
-          <label style="display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px;">Уровень доступа</label>
-          <select v-model="newUser.role" style="width: 100%; padding: 12px; margin-bottom: 25px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; outline: none;">
+          <label class="form-label">Уровень доступа</label>
+          <select v-model="newUser.role" class="input-light mb-4">
             <option value="MANAGER">Менеджер</option>
             <option value="HEAD_OF_DEPT">Руководитель отдела</option>
             <option value="DIRECTOR">Директор</option>
           </select>
-          <button @click="createUser" style="width: 100%; background: #2ecc71; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold;">Сохранить в базу</button>
+          <button @click="createUser" class="btn-success w-full">Сохранить в базу</button>
         </div>
 
-        <div v-if="activeTab === 'plans' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" style="width: 100%; max-width: 1000px; background: transparent; padding: 0;">
+        <div v-if="activeTab === 'plans' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full max-w-1000 bg-transparent">
           <PlansManager />
         </div>
-        <div v-if="activeTab === 'dictionaries' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" style="width: 100%; max-width: 1000px; background: transparent; padding: 0;">
+
+        <div v-if="activeTab === 'dictionaries' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full max-w-1000 bg-transparent">
           <DictionariesManager />
         </div>
-        <div v-if="activeTab === 'dashboard'" style="width: 100%; max-width: 1000px; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+
+        <div v-if="activeTab === 'dashboard'" class="card w-full max-w-1000">
           <ManagerDashboard v-if="userRole === 'MANAGER'" :managerId="currentManagerId" />
           <DirectorDashboard v-else />
         </div>
@@ -271,5 +272,298 @@ const logout = () => {
   </div>
 </template>
 
+<style>
+/* Базовые стили */
+
+/* Лейаут */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Боковое меню */
+.sidebar {
+  width: 260px;
+  background-color: #2c3e50;
+  color: white;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  box-sizing: border-box;
+}
+.sidebar-title {
+  margin-top: 0;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #34495e;
+}
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 30px;
+}
+.avatar {
+  width: 45px;
+  height: 45px;
+  background: #3498db;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 20px;
+}
+.user-name {
+  font-weight: bold;
+  font-size: 16px;
+}
+.user-role {
+  font-size: 13px;
+  color: #bdc3c7;
+}
+
+/* Навигация */
+.nav-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.nav-btn {
+  background: transparent;
+  border: none;
+  color: white;
+  text-align: left;
+  padding: 12px 15px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+  transition: background 0.2s;
+  width: 100%;
+  box-sizing: border-box;
+}
+.nav-btn.active, .nav-btn:hover {
+  background: #34495e;
+}
+.btn-logout {
+  margin-top: auto;
+  background: #e74c3c;
+  border: none;
+  color: white;
+  padding: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background 0.2s;
+  width: 100%;
+}
+.btn-logout:hover {
+  background: #c0392b;
+}
+
+/* Основной контент */
+.main-content {
+  flex: 1;
+  background-color: #f5f6fa;
+  padding: 40px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+.content-wrapper {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+.card {
+  background: white;
+  padding: 30px;
+  border-radius: 12px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+}
+.card-title {
+  margin-top: 0;
+  color: #2c3e50;
+  border-bottom: 2px solid #f5f6fa;
+  padding-bottom: 15px;
+}
+.login-card {
+  background: white;
+  padding: 40px;
+  border-radius: 12px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+  width: 100%;
+  max-width: 350px;
+  margin-top: 10vh;
+}
+.login-title {
+  text-align: center;
+  margin-top: 0;
+  color: #2c3e50;
+}
+.add-user-card {
+  width: 100%;
+  max-width: 500px;
+}
+
+/* Формы и поля ввода */
+.form-label {
+  display: block;
+  margin-bottom: 5px;
+  color: #7f8c8d;
+  font-size: 14px;
+}
+.form-row {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.form-group {
+  flex: 1;
+  min-width: 200px;
+}
+.input-dark {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 15px;
+  background: #2c3e50;
+  color: white;
+  border: 1px solid #34495e;
+  border-radius: 6px;
+  box-sizing: border-box;
+  outline: none;
+}
+.input-dark.no-margin-bottom {
+  margin-bottom: 0;
+  border-radius: 6px 0 0 6px;
+}
+.input-light {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  box-sizing: border-box;
+  outline: none;
+  font-size: 15px;
+}
+.password-input {
+  display: flex;
+  margin-bottom: 20px;
+  width: 100%;
+}
+.btn-eye {
+  background: #34495e;
+  border: none;
+  color: white;
+  padding: 0 12px;
+  border-radius: 0 6px 6px 0;
+  cursor: pointer;
+}
+
+.autocomplete-wrapper {
+  position: relative;
+  margin-bottom: 20px;
+}
 .dropdown-list {
   position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  max-height: 250px;
+  overflow-y: auto;
+  z-index: 1000;
+  box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+  margin-top: 5px;
+}
+.dropdown-item {
+  padding: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f5f6fa;
+  font-size: 14px;
+}
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+.dropdown-item:hover {
+  background-color: #f0f4f8;
+}
+.empty-state {
+  padding: 12px;
+  color: #7f8c8d;
+}
+
+.btn-primary {
+  background: #3498db;
+  color: white;
+  border: none;
+  padding: 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: bold;
+}
+.btn-primary:hover {
+  background: #2980b9;
+}
+.btn-success {
+  background: #2ecc71;
+  color: white;
+  border: none;
+  padding: 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: bold;
+}
+.btn-success:hover {
+  background: #27ae60;
+}
+.w-full {
+  width: 100%;
+}
+.max-w-1000 {
+  max-width: 1000px;
+}
+.mb-4 {
+  margin-bottom: 25px;
+}
+.bg-transparent {
+  background: transparent;
+  padding: 0;
+}
+.text-muted {
+  color: #95a5a6;
+  font-size: 12px;
+}
+.error-msg {
+  color: #e74c3c;
+  text-align: center;
+  margin-bottom: 0;
+  min-height: 20px;
+  margin-top: 10px;
+}
+
+@media (max-width: 768px) {
+  .app-layout {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    padding: 15px;
+  }
+  .main-content {
+    padding: 20px 10px;
+  }
+  .form-row {
+    flex-direction: column;
+    gap: 0;
+  }
+  .form-group {
+    width: 100%;
+  }
+}
+</style>

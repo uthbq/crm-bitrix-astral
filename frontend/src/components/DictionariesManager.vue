@@ -146,10 +146,14 @@ onMounted(() => {
 .split-layout { display: flex; gap: 20px; margin-top: 20px; align-items: flex-start; flex-wrap: wrap; }
 .card { flex: 1; min-width: 300px; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.02); border: 1px solid #eee; }
 .card h3 { margin-top: 0; color: #34495e; font-size: 16px; margin-bottom: 15px; }
-.add-form { display: flex; gap: 8px; margin-bottom: 15px; }
-.add-form input, .add-form select { padding: 10px; border: 1px solid #ddd; border-radius: 6px; outline: none; flex: 1; font-size: 13px; }
-.btn-add { background: #2ecc71; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+
+.add-form { display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; }
+
+.add-form input, .add-form select { padding: 10px; border: 1px solid #ddd; border-radius: 6px; outline: none; flex: 1; min-width: 120px; font-size: 13px; }
+
+.btn-add { background: #2ecc71; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; font-weight: bold; flex-shrink: 0; white-space: nowrap; }
 .btn-add:hover { background: #27ae60; }
+
 .data-table { width: 100%; border-collapse: collapse; }
 .data-table th, .data-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; text-align: left; font-size: 13px; color: #2c3e50; }
 .data-table th { background: #f5f6fa; color: #7f8c8d; font-weight: normal; }

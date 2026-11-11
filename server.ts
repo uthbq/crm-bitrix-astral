@@ -96,63 +96,73 @@ app.get('/api/calls-test', async (req: any, res: any) => {
     }
 });
 
-app.get('/api/sync-calls', async (req: any, res: any) => {
-    try {
-        const response = await fetch(`${process.env.API_URL}/calls?limit=100`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.API_TOKEN}`
-            }
-        });
-        
-        const data = await response.json();
+app.get('/api/sync-calls', (req: any, res: any) => {
+    res.json({ message: 'Умная синхронизация звонков запущена в фоне.' });
 
-        if (!data.ok || !data.calls) {
-            return res.status(400).json({ error: 'Ошибка от API Битрикса' });
+    (async () => {
+        try {
+            const maxIdResult = db.prepare("SELECT MAX(bitrix_call_id) as maxId FROM calls").get() as any;
+            
+            let afterId = maxIdResult.maxId || 0; 
+            
+            console.log(`🚀 Умная синхронизация звонков началась. Стартуем с afterId=${afterId}...`);
+            
+            let hasMore = true;
+            let totalInserted = 0;
+
+            const stmt = db.prepare(`
+                INSERT OR IGNORE INTO calls 
+                (bitrix_call_id, manager_id, direction, duration_seconds, started_at, owner_type, owner_id) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `);
+
+            while (hasMore) {
+                const url = `${process.env.API_URL}/calls?limit=500` + (afterId ? `&afterId=${afterId}` : '');
+                
+                const response = await fetch(url, {
+                    headers: { 'Authorization': `Bearer ${process.env.API_TOKEN}` }
+                });
+                
+                const data = await response.json();
+
+                if (!data.ok || !data.calls || data.calls.length === 0) {
+                    break;
+                }
+
+                let insertedInChunk = 0;
+                db.transaction((callsChunk) => {
+                    for (const call of callsChunk) {
+                        const startTime = call.startTime ? new Date(call.startTime).getTime() : 0;
+                        const endTime = call.endTime ? new Date(call.endTime).getTime() : startTime;
+                        const dur = startTime ? Math.max(0, Math.round((endTime - startTime) / 1000)) : 0;
+                        
+                        const info = stmt.run(
+                            call.id, call.responsibleId, call.direction, 
+                            dur, call.startTime || null, call.owner?.type || null, call.owner?.id || null
+                        );
+                        if (info.changes > 0) insertedInChunk++;
+                    }
+                })(data.calls);
+
+                totalInserted += insertedInChunk;
+                
+                if (data.dataComplete === true) {
+                    hasMore = false;
+                } else {
+                    afterId = Math.max(...data.calls.map((c: any) => c.id));
+                }
+            }
+
+            console.log(`✅ Синхронизация завершена! Новых звонков скачано: ${totalInserted}`);
+      
+            if (totalInserted > 0) {
+                await fetch('http://localhost:3000/api/calculate-daily-stats');
+                console.log('🔄 Статистика обновлена с учетом новых звонков.');
+            }
+        } catch (err) {
+            console.error('❌ Ошибка синхронизации:', err);
         }
-
-        const stmt = db.prepare(`
-            INSERT OR IGNORE INTO calls 
-            (bitrix_call_id, manager_id, direction, duration_seconds, started_at, owner_type, owner_id) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `);
-
-        let insertedCount = 0;
-
-        const insertMany = db.transaction((calls) => {
-            for (const call of calls) {
-                const startTime = new Date(call.startTime).getTime();
-                const endTime = new Date(call.endTime).getTime();
-                const durationSeconds = Math.max(0, Math.round((endTime - startTime) / 1000));
-                
-                const ownerType = call.owner ? call.owner.type : null;
-                const ownerId = call.owner ? call.owner.id : null;
-
-                const info = stmt.run(
-                    call.id,
-                    call.responsibleId,
-                    call.direction,
-                    durationSeconds,
-                    call.startTime,
-                    ownerType,
-                    ownerId
-                );
-                
-                if (info.changes > 0) insertedCount++;
-            }
-        });
-
-        insertMany(data.calls);
-
-        res.json({ 
-            message: 'Синхронизация успешна', 
-            total_fetched: data.calls.length, 
-            new_inserted: insertedCount 
-        });
-
-    } catch (error) {
-        console.error('Ошибка синхронизации звонков:', error);
-        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-    }
+    })();
 });
 app.get('/api/stats/calls', async (req: any, res: any) => {
     try {
@@ -396,7 +406,7 @@ app.get('/api/calculate-daily-stats', (req: any, res: any) => {
                 SELECT 
                     date(started_at), manager_id, 0, 0, 'primary', 
                     COUNT(id), SUM(CASE WHEN duration_seconds >= 44 THEN 1 ELSE 0 END)
-                FROM calls WHERE direction = 'outgoing' AND manager_id IS NOT NULL
+                FROM calls WHERE manager_id IS NOT NULL
                 GROUP BY date(started_at), manager_id
                 ON CONFLICT(date, manager_id, base_id, product_id, work_type) DO UPDATE SET
                     total_calls = excluded.total_calls,
@@ -713,6 +723,24 @@ app.get('/api/analytics/refusals', (req: any, res: any) => {
         res.status(500).json({ error: 'Ошибка получения аналитики отказов' });
     }
 });
+
+const runBackgroundSync = async () => {
+    console.log('🔄 Запуск фоновой синхронизации данных...');
+    try {
+        await fetch('http://localhost:3000/api/sync-calls');
+        await fetch('http://localhost:3000/api/sync-leads');
+        await fetch('http://localhost:3000/api/sync-deals');
+        await fetch('http://localhost:3000/api/calculate-daily-stats'); 
+        console.log('✅ Фоновая синхронизация завершена успешно');
+    } catch (error) {
+        console.error('❌ Ошибка фоновой синхронизации:', error);
+    }
+};
+
+setTimeout(() => {
+    runBackgroundSync();
+    setInterval(runBackgroundSync, 15 * 60 * 1000);
+}, 10000);
 
 app.listen(3000, () => {
     console.log('Сервер запущен на http://localhost:3000');
