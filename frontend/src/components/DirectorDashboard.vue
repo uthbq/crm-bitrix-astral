@@ -1,6 +1,7 @@
 <template>
   <div class="director-dashboard">
-    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f5f6fa; padding-bottom: 15px; margin-bottom: 20px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f5f6fa; 
+    padding-bottom: 15px; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
       <h2 style="margin: 0; color: #2c3e50;">Сводка по компании</h2>
       
       <div class="filters">
@@ -15,6 +16,10 @@
           <option value="">Все базы</option>
           <option v-for="b in basesList" :key="b.id" :value="b.id">{{ b.name }}</option>
         </select>
+
+        <button @click="exportToCSV" class="btn-export" :disabled="loading">
+          📥 Экспорт в CSV
+        </button>
       </div>
     </div>
     
@@ -36,13 +41,15 @@
             <tr>
               <th>Причина</th>
               <th style="width: 150px; text-align: center;">Количество лидов</th>
+              <th style="width: 100px; text-align: center;">Доля (%)</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="refusals.length === 0"><td colspan="2" class="empty">Нет отказов за этот период</td></tr>
+            <tr v-if="refusals.length === 0"><td colspan="3" class="empty">Нет отказов за этот период</td></tr>
             <tr v-for="(r, index) in refusals" :key="index">
               <td><strong>{{ r.reason_name }}</strong></td>
               <td style="text-align: center; color: #e74c3c; font-weight: bold;">{{ r.count }}</td>
+              <td style="text-align: center; color: #7f8c8d;">{{ getRefusalPercentage(r.count) }}%</td>
             </tr>
           </tbody>
         </table>
@@ -55,7 +62,7 @@
             <tr>
               <th>Сотрудник</th>
               <th>Звонки</th>
-              <th>Разговоры</th>
+              <th>Разговоры (по квалиф.)</th>
               <th>Кач. Лиды</th>
               <th>Оплаты</th>
               <th>Сумма (₽)</th>
@@ -86,20 +93,22 @@
           <thead>
             <tr>
               <th>База</th>
-              <th>Звонки</th>
               <th>Кач. Лиды</th>
-              <th>Оплаты</th>
-              <th>Сумма (₽)</th>
+              <th>Оплаты (шт)</th>
+              <th>Осн. продукт (₽)</th>
+              <th>Кросс-продажи (₽)</th>
+              <th>Итого (₽)</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="bases.length === 0"><td colspan="5" class="empty">Нет данных за этот период</td></tr>
+            <tr v-if="bases.length === 0"><td colspan="6" class="empty">Нет данных за этот период</td></tr>
             <tr v-for="b in bases" :key="b.base_id">
               <td><strong>{{ b.base_name }}</strong></td>
-              <td>{{ b.total_calls }}</td>
               <td>{{ b.quality_leads }}</td>
               <td>{{ b.paid_deals }}</td>
-              <td class="money">{{ b.amount_sum.toLocaleString('ru-RU') }} ₽</td>
+              <td class="money" style="color: #2980b9;">{{ b.main_amount.toLocaleString('ru-RU') }}</td>
+              <td style="color: #f39c12; font-weight: bold;">{{ b.cross_amount.toLocaleString('ru-RU') }}</td>
+              <td class="money">{{ b.amount_sum.toLocaleString('ru-RU') }}</td>
             </tr>
           </tbody>
         </table>
@@ -127,11 +136,20 @@ ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
 const managers = ref<any[]>([]);
 const bases = ref<any[]>([]);
 const dailyStats = ref<any[]>([]);
-const refusals = ref<any[]>([]); // Состояние для отказов
+const refusals = ref<any[]>([]); 
 const basesList = ref<any[]>([]); 
 const loading = ref(true);
 
 const filters = reactive({ period: 'all', base_id: '' });
+
+const totalRefusalsCount = computed(() => {
+  return refusals.value.reduce((sum, r) => sum + r.count, 0);
+});
+
+const getRefusalPercentage = (count: number) => {
+  if (totalRefusalsCount.value === 0) return 0;
+  return Math.round((count / totalRefusalsCount.value) * 100);
+};
 
 const getDatesForPeriod = (period: string) => {
   if (period === 'all') return { start: '', end: '' };
@@ -164,7 +182,7 @@ const loadAnalytics = async () => {
       fetch(`http://localhost:3000/api/analytics/managers${queryStr}`),
       fetch(`http://localhost:3000/api/analytics/bases${queryStr}`),
       fetch(`http://localhost:3000/api/dashboard${queryStr}`),
-      fetch(`http://localhost:3000/api/analytics/refusals${queryStr}`) // Запрос отказов
+      fetch(`http://localhost:3000/api/analytics/refusals${queryStr}`)
     ]);
     
     if (resManagers.ok) managers.value = await resManagers.json();
@@ -185,6 +203,45 @@ const loadBasesList = async () => {
   } catch (e) {}
 };
 
+const exportToCSV = () => {
+  let csvContent = '\uFEFF'; 
+
+  csvContent += 'РЕЙТИНГ МЕНЕДЖЕРОВ\n';
+  csvContent += 'Сотрудник;Звонки;Разговоры;Кач. Лиды;Оплаты;Сумма (руб)\n';
+  managers.value.forEach(m => {
+    csvContent += `${m.manager_name};${m.total_calls};${m.valid_conversations};${m.quality_leads};${m.paid_deals};${m.amount_sum}\n`;
+  });
+  
+  csvContent += '\n';
+
+  csvContent += 'ЭФФЕКТИВНОСТЬ БАЗ\n';
+  csvContent += 'База;Кач. Лиды;Оплаты;Осн. продукт (руб);Кросс-продажи (руб);Итого (руб)\n';
+  bases.value.forEach(b => {
+    csvContent += `${b.base_name};${b.quality_leads};${b.paid_deals};${b.main_amount};${b.cross_amount};${b.amount_sum}\n`;
+  });
+
+  csvContent += '\n';
+
+  csvContent += 'ТОП ПРИЧИН ОТКАЗОВ\n';
+  csvContent += 'Причина;Количество;Доля (%)\n';
+  refusals.value.forEach(r => {
+    csvContent += `${r.reason_name};${r.count};${getRefusalPercentage(r.count)}%\n`;
+  });
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  
+  const dateStr = new Date().toISOString().split('T')[0];
+  link.setAttribute('href', url);
+  link.setAttribute('download', `Отчет_Директора_${dateStr}.csv`);
+  link.style.visibility = 'hidden';
+  
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
+
 onMounted(() => {
   loadBasesList();
   loadAnalytics();
@@ -201,7 +258,7 @@ const chartData = computed(() => {
     labels: reversedStats.map(day => formatDate(day.date)),
     datasets: [
       { label: 'Исходящие наборы', backgroundColor: '#3498db', data: reversedStats.map(day => day.total_outbound) },
-      { label: 'Разговоры > 44 сек', backgroundColor: '#2ecc71', data: reversedStats.map(day => day.valid_conversations) }
+      { label: 'Разговоры (по квалификации)', backgroundColor: '#2ecc71', data: reversedStats.map(day => day.valid_conversations) }
     ]
   };
 });
@@ -215,8 +272,23 @@ const chartOptions = {
 
 <style scoped>
 .director-dashboard { width: 100%; font-family: Arial, sans-serif; }
-.filters { display: flex; gap: 15px; }
+.filters { display: flex; gap: 15px; align-items: center; }
 .filter-select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; outline: none; background: white; color: #2c3e50; cursor: pointer; }
+.btn-export {
+  padding: 8px 15px;
+  background: #27ae60;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.btn-export:hover:not(:disabled) { background: #2ecc71; }
+.btn-export:disabled { background: #95a5a6; cursor: not-allowed; }
 .dashboard-grid { display: flex; flex-direction: column; gap: 30px; }
 .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.02); border: 1px solid #eee; }
 .card h3 { margin-top: 0; color: #34495e; margin-bottom: 15px; }

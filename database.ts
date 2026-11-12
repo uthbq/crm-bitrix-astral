@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 
 const db: Database.Database = new Database('app.db', { verbose: console.log });
 
+db.pragma('journal_mode = WAL');
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS departments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

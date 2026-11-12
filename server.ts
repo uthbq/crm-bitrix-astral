@@ -183,157 +183,118 @@ app.get('/api/stats/calls', async (req: any, res: any) => {
         res.status(500).json({ error: 'Внутренняя ошибка сервера' });
     }
 });
-app.get('/api/sync-leads', async (req: any, res: any) => {
-    try {
-        const response = await fetch(`${process.env.API_URL}/leads?limit=100`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.API_TOKEN}`
-            }
-        });
-        
-        const data = await response.json();
+app.get('/api/sync-leads', (req: any, res: any) => {
+    res.json({ message: 'Умная синхронизация лидов запущена в фоне.' });
 
-        if (!data.ok || !data.leads) {
-            return res.status(400).json({ error: 'Ошибка от API Битрикса' });
-        }
+    (async () => {
+        try {
+            const maxIdResult = db.prepare("SELECT MAX(bitrix_lead_id) as maxId FROM leads").get() as any;
+            let afterId = maxIdResult.maxId || 0; 
+            console.log(`🚀 Умная синхронизация лидов началась. Стартуем с afterId=${afterId}...`);
+            
+            let hasMore = true;
+            let totalInserted = 0;
 
-        const stmt = db.prepare(`
-            INSERT INTO leads (bitrix_lead_id, inn, status_id, manager_id, segmentation) 
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(bitrix_lead_id) DO UPDATE SET
-                status_id = excluded.status_id,
-                manager_id = excluded.manager_id,
-                segmentation = excluded.segmentation
-        `);
+            const stmt = db.prepare(`
+                INSERT INTO leads (bitrix_lead_id, inn, status_id, manager_id, segmentation, created_at) 
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bitrix_lead_id) DO UPDATE SET
+                    status_id = excluded.status_id,
+                    manager_id = excluded.manager_id,
+                    segmentation = excluded.segmentation
+            `);
 
-        const insertMany = db.transaction((leads) => {
-            for (const lead of leads) {
-                const segmentsStr = lead.segments ? JSON.stringify(lead.segments) : null;
-                const statusId = lead.status ? lead.status.id : null;
+            while (hasMore) {
+                const url = `${process.env.API_URL}/leads?limit=500` + (afterId ? `&afterId=${afterId}` : '');
+                const response = await fetch(url, { headers: { 'Authorization': `Bearer ${process.env.API_TOKEN}` } });
+                const data = await response.json();
 
-                stmt.run(
-                    lead.id,
-                    lead.inn || null,
-                    statusId,
-                    lead.assignedById,
-                    segmentsStr
-                );
-            }
-        });
+                if (!data.ok || !data.leads || data.leads.length === 0) break;
 
-        insertMany(data.leads);
+                let insertedInChunk = 0;
+                db.transaction((leadsChunk) => {
+                    for (const lead of leadsChunk) {
+                        const segmentsStr = lead.segments ? JSON.stringify(lead.segments) : null;
+                        const statusId = lead.status ? lead.status.id : null;
+                        const info = stmt.run(
+                            lead.id, lead.inn || null, statusId, lead.assignedById, segmentsStr, lead.dateCreate || null
+                        );
+                        if (info.changes > 0) insertedInChunk++;
+                    }
+                })(data.leads);
 
-        res.json({ 
-            message: 'Синхронизация лидов успешна', 
-            total_fetched: data.leads.length
-        });
-
-    } catch (error) {
-        console.error('Ошибка синхронизации лидов:', error);
-        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-    }
-});
-app.get('/api/sync-leads', async (req: any, res: any) => {
-    try {
-        const response = await fetch(`${process.env.API_URL}/leads?limit=100`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.API_TOKEN}`
-            }
-        });
-        
-        const data = await response.json();
-
-        if (!data.ok || !data.leads) {
-            return res.status(400).json({ error: 'Ошибка от API Битрикса' });
-        }
-
-        const stmt = db.prepare(`
-            INSERT INTO leads (bitrix_lead_id, inn, status_id, manager_id, segmentation, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(bitrix_lead_id) DO UPDATE SET
-                status_id = excluded.status_id,
-                manager_id = excluded.manager_id,
-                segmentation = excluded.segmentation
-        `);
-
-        const insertMany = db.transaction((leads) => {
-            for (const lead of leads) {
-                const segmentsStr = lead.segments ? JSON.stringify(lead.segments) : null;
-                const statusId = lead.status ? lead.status.id : null;
-
-                stmt.run(
-                    lead.id,
-                    lead.inn || null,
-                    statusId,
-                    lead.assignedById,
-                    segmentsStr,
-                    lead.dateCreate || null
-                );
-            }
-        });
-
-        insertMany(data.leads);
-
-        res.json({ 
-            message: 'Синхронизация лидов успешна', 
-            total_fetched: data.leads.length
-        });
-
-    } catch (error) {
-        console.error('Ошибка синхронизации лидов:', error);
-        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-    }
-});
-app.get('/api/sync-deals', async (req: any, res: any) => {
-    try {
-        const response = await fetch(`${process.env.API_URL}/deals?limit=100`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.API_TOKEN}`
-            }
-        });
-        
-        const data = await response.json();
-
-        if (!data.ok || !data.deals) {
-            return res.status(400).json({ error: 'Ошибка от API Битрикса' });
-        }
-
-        const stmt = db.prepare(`
-            INSERT INTO deals (bitrix_deal_id, lead_id, manager_id, inn, stage_id, amount, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(bitrix_deal_id) DO UPDATE SET
-                stage_id = excluded.stage_id,
-                manager_id = excluded.manager_id,
-                amount = excluded.amount
-        `);
-
-        const insertMany = db.transaction((deals) => {
-            for (const deal of deals) {
-                const stageId = deal.stage ? deal.stage.id : null;
+                totalInserted += insertedInChunk;
                 
-                stmt.run(
-                    deal.id,
-                    deal.leadId || null,
-                    deal.assignedById,
-                    deal.inn || null,
-                    stageId,
-                    deal.amount || 0,
-                    deal.dateCreate || null
-                );
+                if (data.dataComplete === true) {
+                    hasMore = false;
+                } else {
+                    afterId = Math.max(...data.leads.map((l: any) => l.id));
+                }
             }
-        });
 
-        insertMany(data.deals);
+            console.log(`✅ Синхронизация лидов завершена! Обраработано: ${totalInserted}`);
+            if (totalInserted > 0) await fetch('http://localhost:3000/api/calculate-daily-stats');
+        } catch (error) {
+            console.error('❌ Ошибка синхронизации лидов:', error);
+        }
+    })();
+});
 
-        res.json({ 
-            message: 'Синхронизация сделок успешна', 
-            total_fetched: data.deals.length
-        });
+app.get('/api/sync-deals', (req: any, res: any) => {
+    res.json({ message: 'Умная синхронизация сделок запущена в фоне.' });
 
-    } catch (error) {
-        console.error('Ошибка синхронизации сделок:', error);
-        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-    }
+    (async () => {
+        try {
+            const maxIdResult = db.prepare("SELECT MAX(bitrix_deal_id) as maxId FROM deals").get() as any;
+            let afterId = maxIdResult.maxId || 0; 
+            console.log(`🚀 Умная синхронизация сделок началась. Стартуем с afterId=${afterId}...`);
+            
+            let hasMore = true;
+            let totalInserted = 0;
+
+            const stmt = db.prepare(`
+                INSERT INTO deals (bitrix_deal_id, lead_id, manager_id, inn, stage_id, amount, created_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bitrix_deal_id) DO UPDATE SET
+                    stage_id = excluded.stage_id,
+                    manager_id = excluded.manager_id,
+                    amount = excluded.amount
+            `);
+
+            while (hasMore) {
+                const url = `${process.env.API_URL}/deals?limit=500` + (afterId ? `&afterId=${afterId}` : '');
+                const response = await fetch(url, { headers: { 'Authorization': `Bearer ${process.env.API_TOKEN}` } });
+                const data = await response.json();
+
+                if (!data.ok || !data.deals || data.deals.length === 0) break;
+
+                let insertedInChunk = 0;
+                db.transaction((dealsChunk) => {
+                    for (const deal of dealsChunk) {
+                        const stageId = deal.stage ? deal.stage.id : null;
+                        const info = stmt.run(
+                            deal.id, deal.leadId || null, deal.assignedById, deal.inn || null, 
+                            stageId, deal.amount || 0, deal.dateCreate || null
+                        );
+                        if (info.changes > 0) insertedInChunk++;
+                    }
+                })(data.deals);
+
+                totalInserted += insertedInChunk;
+                
+                if (data.dataComplete === true) {
+                    hasMore = false;
+                } else {
+                    afterId = Math.max(...data.deals.map((d: any) => d.id));
+                }
+            }
+
+            console.log(`✅ Синхронизация сделок завершена! Обраработано: ${totalInserted}`);
+            if (totalInserted > 0) await fetch('http://localhost:3000/api/calculate-daily-stats');
+        } catch (error) {
+            console.error('❌ Ошибка синхронизации сделок:', error);
+        }
+    })();
 });
 app.post('/api/users', authenticateToken, async (req: any, res: any): Promise<any> => {
     const creatorRole = req.user.role;
@@ -404,15 +365,24 @@ app.get('/api/calculate-daily-stats', (req: any, res: any) => {
                     date, manager_id, base_id, product_id, work_type, total_calls, valid_conversations
                 )
                 SELECT 
-                    date(started_at), manager_id, 0, 0, 'primary', 
-                    COUNT(id), SUM(CASE WHEN duration_seconds >= 44 THEN 1 ELSE 0 END)
-                FROM calls WHERE manager_id IS NOT NULL
-                GROUP BY date(started_at), manager_id
+                    date(c.started_at), c.manager_id, 0, 0, 'primary', 
+                    COUNT(c.id),
+                    SUM(
+                        CASE 
+                            WHEN u.qualification = 'ведущий' AND c.duration_seconds >= 59 THEN 1
+                            WHEN (u.qualification = 'обычный' OR u.qualification IS NULL) AND c.duration_seconds >= 44 THEN 1
+                            ELSE 0 
+                        END
+                    )
+                FROM calls c
+                LEFT JOIN users u ON c.manager_id = u.bitrix_id
+                WHERE c.manager_id IS NOT NULL
+                GROUP BY date(c.started_at), c.manager_id
                 ON CONFLICT(date, manager_id, base_id, product_id, work_type) DO UPDATE SET
                     total_calls = excluded.total_calls,
                     valid_conversations = excluded.valid_conversations
             `).run();
-
+            
             db.prepare(`
                 INSERT INTO daily_stats (
                     date, manager_id, base_id, product_id, work_type, unique_leads, quality_leads
@@ -581,28 +551,51 @@ app.get('/api/analytics/managers', (req: any, res: any) => {
 app.get('/api/analytics/bases', (req: any, res: any) => {
     try {
         const { startDate, endDate } = req.query;
-        let where = [];
-        let params: any[] = [];
-
-        if (startDate) { where.push('ds.date >= ?'); params.push(startDate); }
-        if (endDate) { where.push('ds.date <= ?'); params.push(endDate); }
-
-        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
-
-        const stats = db.prepare(`
+        
+        const query = `
+            WITH LeadsStats AS (
+                SELECT 
+                    b.id as base_id,
+                    b.name as base_name,
+                    SUM(CASE WHEN l.is_quality = 1 THEN 1 ELSE 0 END) as quality_leads
+                FROM bases b
+                LEFT JOIN leads l ON b.name = l.segmentation
+                ${startDate ? "WHERE date(l.created_at) >= ? AND date(l.created_at) <= ?" : ""}
+                GROUP BY b.id
+            ),
+            DealsStats AS (
+                SELECT 
+                    b.id as base_id,
+                    COUNT(d.id) as paid_deals,
+                    SUM(d.amount) as amount_sum,
+                    SUM(CASE WHEN d.product_field IS NOT NULL AND CAST(d.product_field AS TEXT) != CAST(b.main_product_id AS TEXT) THEN d.amount ELSE 0 END) as cross_amount,
+                    SUM(CASE WHEN d.product_field IS NULL OR CAST(d.product_field AS TEXT) = CAST(b.main_product_id AS TEXT) OR b.main_product_id IS NULL THEN d.amount ELSE 0 END) as main_amount
+                FROM bases b
+                LEFT JOIN leads l ON b.name = l.segmentation
+                JOIN deals d ON l.bitrix_lead_id = d.lead_id
+                WHERE d.amount > 0
+                ${startDate ? "AND date(d.created_at) >= ? AND date(d.created_at) <= ?" : ""}
+                GROUP BY b.id
+            )
             SELECT 
-                ds.base_id,
-                COALESCE(b.name, 'Без базы (ID ' || ds.base_id || ')') as base_name,
-                SUM(ds.total_calls) as total_calls,
-                SUM(ds.quality_leads) as quality_leads,
-                SUM(ds.paid_deals) as paid_deals,
-                SUM(ds.amount_sum) as amount_sum
-            FROM daily_stats ds
-            LEFT JOIN bases b ON ds.base_id = b.id
-            ${whereClause}
-            GROUP BY ds.base_id
-            ORDER BY amount_sum DESC, quality_leads DESC, total_calls DESC
-        `).all(...params);
+                ls.base_id,
+                ls.base_name,
+                ls.quality_leads,
+                COALESCE(ds.paid_deals, 0) as paid_deals,
+                COALESCE(ds.amount_sum, 0) as amount_sum,
+                COALESCE(ds.main_amount, 0) as main_amount,
+                COALESCE(ds.cross_amount, 0) as cross_amount
+            FROM LeadsStats ls
+            LEFT JOIN DealsStats ds ON ls.base_id = ds.base_id
+            ORDER BY amount_sum DESC, quality_leads DESC
+        `;
+        
+        let qParams: any[] = [];
+        if (startDate && endDate) {
+            qParams = [startDate, endDate, startDate, endDate];
+        }
+
+        const stats = db.prepare(query).all(...qParams);
         res.json(stats);
     } catch (error) {
         console.error('Ошибка аналитики баз:', error);
@@ -721,6 +714,15 @@ app.get('/api/analytics/refusals', (req: any, res: any) => {
     } catch (error) {
         console.error('Ошибка аналитики отказов:', error);
         res.status(500).json({ error: 'Ошибка получения аналитики отказов' });
+    }
+});
+
+app.get('/api/users/:bitrix_id/info', (req: any, res: any) => {
+    try {
+        const user = db.prepare('SELECT qualification FROM users WHERE bitrix_id = ?').get(req.params.bitrix_id) as any;
+        res.json({ qualification: user ? user.qualification : 'обычный' });
+    } catch(e) {
+        res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
 
