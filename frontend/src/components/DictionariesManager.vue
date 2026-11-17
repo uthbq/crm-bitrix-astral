@@ -65,6 +65,92 @@
         </table>
       </div>
     </div>
+
+    <div class="card constructor-card">
+      <div class="constructor-header">
+        <h3>⚙️ Конструктор конверсий по базам</h3>
+        <p class="subtitle">Настройте индивидуальные формулы расчета конверсии для каждой базы</p>
+      </div>
+
+      <div class="constructor-form">
+        <div class="form-group">
+          <label>База (срез)</label>
+          <select v-model="newRule.base_id" class="input-light">
+            <option value="" disabled>Выберите базу</option>
+            <option v-for="b in bases" :key="b.id" :value="b.id">{{ b.name }}</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Целевое событие (Числитель)</label>
+          <select v-model="newRule.numerator" class="input-light">
+            <option value="quality_leads">Качественные лиды</option>
+            <option value="paid_deals">Оплаты (Сделки)</option>
+            <option value="transfers">Передачи в корп</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Исходная база (Знаменатель)</label>
+          <select v-model="newRule.denominator" class="input-light">
+            <option value="unique_leads">Взятые в работу лиды</option>
+            <option value="total_calls">Все наборы (Звонки)</option>
+            <option value="valid_conversations">Разговоры</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Продукт</label>
+          <select v-model="newRule.product_type" class="input-light">
+            <option value="all">Любой</option>
+            <option value="main">Только основной</option>
+            <option value="cross">Только кросс</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Цикл работы</label>
+          <select v-model="newRule.cycle_type" class="input-light">
+            <option value="all">Все циклы</option>
+            <option value="primary">Только первичный</option>
+            <option value="return">Возврат / Догрев</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="flex: 0.5;">
+          <label>&nbsp;</label>
+          <button @click="saveRule" class="btn-save-rule">Сохранить</button>
+        </div>
+      </div>
+
+      <div class="mandatory-exclusion">
+        <span class="lock-icon">🔒</span>
+        <strong>Обязательное исключение:</strong> Лиды в стадии «Импорт / Поступило» автоматически исключаются из знаменателя "Взятые в работу" по системному правилу.
+      </div>
+
+      <table class="data-table" style="margin-top: 20px;">
+        <thead>
+          <tr>
+            <th>База</th>
+            <th>Формула (Числитель / Знаменатель)</th>
+            <th>Продукт</th>
+            <th>Цикл</th>
+            <th style="width: 80px; text-align: center;">Версия</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="rules.length === 0"><td colspan="5" class="empty">Правила не настроены. Расчет идет по умолчанию.</td></tr>
+          <tr v-for="rule in rules" :key="rule.id">
+            <td><strong>{{ rule.base_name }}</strong></td>
+            <td style="color: #34495e;">{{ formatFormula(rule.numerator) }} <strong>/</strong> {{ formatFormula(rule.denominator) }}</td>
+            <td style="color: #7f8c8d;">{{ translateFilter(rule.product_type) }}</td>
+            <td style="color: #7f8c8d;">{{ translateFilter(rule.cycle_type) }}</td>
+            <td style="text-align: center; color: #7f8c8d;">v.{{ rule.version }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
   </div>
 </template>
 
@@ -74,18 +160,47 @@ import { ref, onMounted } from 'vue';
 interface Product { id: number; name: string; }
 interface Base { id: number; name: string; main_product_id: number | null; }
 interface Reason { id: number; name: string; }
+interface ConversionRule { id: number; base_id: number; base_name: string; numerator: string; denominator: string; calc_type: string; product_type: string; cycle_type: string; version: number; }
 
 const products = ref<Product[]>([]);
 const bases = ref<Base[]>([]);
 const reasons = ref<Reason[]>([]);
+const rules = ref<ConversionRule[]>([]);
 
 const newProductName = ref('');
 const newBaseName = ref('');
 const newBaseProductId = ref<number | ''>('');
 const newReasonName = ref('');
 
+const newRule = ref({
+  base_id: '',
+  numerator: 'quality_leads',
+  denominator: 'unique_leads',
+  calc_type: 'уникальные лиды',
+  product_type: 'all',
+  cycle_type: 'all'
+});
+
+const vocab: Record<string, string> = {
+  quality_leads: 'Качественные лиды',
+  paid_deals: 'Оплаты',
+  transfers: 'Передачи',
+  unique_leads: 'Взятые в работу',
+  total_calls: 'Все наборы',
+  valid_conversations: 'Разговоры'
+};
+
+const formatFormula = (key: string) => vocab[key] || key;
+const translateFilter = (val: string) => {
+  if (val === 'main') return 'Основной';
+  if (val === 'cross') return 'Кросс';
+  if (val === 'primary') return 'Первичный';
+  if (val === 'return') return 'Возврат';
+  return 'Любой';
+};
+
 const loadProducts = async () => {
-  try { products.value = await (await fetch('http://localhost:3000/api/products')).json(); } catch (e) { }
+  try { products.value = await (await fetch('http://localhost:3000/api/products')).json(); } catch (e) {}
 };
 const addProduct = async () => {
   if (!newProductName.value.trim()) return;
@@ -100,7 +215,7 @@ const deleteProduct = async (id: number) => {
 };
 
 const loadBases = async () => {
-  try { bases.value = await (await fetch('http://localhost:3000/api/bases')).json(); } catch (e) { }
+  try { bases.value = await (await fetch('http://localhost:3000/api/bases')).json(); } catch (e) {}
 };
 const addBase = async () => {
   if (!newBaseName.value.trim()) return;
@@ -111,7 +226,10 @@ const addBase = async () => {
   if (res.ok) { newBaseName.value = ''; newBaseProductId.value = ''; await loadBases(); } else alert((await res.json()).error);
 };
 const deleteBase = async (id: number) => {
-  if (confirm('Удалить базу?')) { await fetch(`http://localhost:3000/api/bases/${id}`, { method: 'DELETE' }); await loadBases(); }
+  if (confirm('Удалить базу? Связанные правила конверсии также будут удалены.')) { 
+    await fetch(`http://localhost:3000/api/bases/${id}`, { method: 'DELETE' }); 
+    await loadBases(); await loadRules();
+  }
 };
 const getProductName = (id: number | null) => {
   if (!id) return '-';
@@ -120,7 +238,7 @@ const getProductName = (id: number | null) => {
 };
 
 const loadReasons = async () => {
-  try { reasons.value = await (await fetch('http://localhost:3000/api/refusal-reasons')).json(); } catch (e) { }
+  try { reasons.value = await (await fetch('http://localhost:3000/api/refusal-reasons')).json(); } catch (e) {}
 };
 const addReason = async () => {
   if (!newReasonName.value.trim()) return;
@@ -134,10 +252,32 @@ const deleteReason = async (id: number) => {
   if (confirm('Удалить причину?')) { await fetch(`http://localhost:3000/api/refusal-reasons/${id}`, { method: 'DELETE' }); await loadReasons(); }
 };
 
+const loadRules = async () => {
+  try { rules.value = await (await fetch('http://localhost:3000/api/conversions')).json(); } catch (e) {}
+};
+const saveRule = async () => {
+  if (!newRule.value.base_id) return alert('Выберите базу');
+  
+  const res = await fetch('http://localhost:3000/api/conversions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(newRule.value)
+  });
+  
+  if (res.ok) { 
+    newRule.value.base_id = ''; 
+    await loadRules(); 
+  } else {
+    // Вывод ошибки валидации логики (когда смешивают оплаты и звонки)
+    const errData = await res.json();
+    alert(`❌ ${errData.error}`);
+  }
+};
+
 onMounted(() => {
   loadProducts();
   loadBases();
   loadReasons();
+  loadRules();
 });
 </script>
 
@@ -147,13 +287,26 @@ onMounted(() => {
 .card { flex: 1; min-width: 300px; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.02); border: 1px solid #eee; }
 .card h3 { margin-top: 0; color: #34495e; font-size: 16px; margin-bottom: 15px; }
 
-.add-form { display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; }
+.constructor-card { width: 100%; margin-top: 30px; flex: none; max-width: 100%; border-top: 4px solid #9b59b6; }
+.constructor-header h3 { font-size: 18px; margin-bottom: 5px; color: #2c3e50; }
+.subtitle { color: #7f8c8d; font-size: 13px; margin-top: 0; margin-bottom: 20px; }
+.constructor-form { display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap; background: #fdfdfd; padding: 20px; border-radius: 8px; border: 1px solid #eee; margin-bottom: 15px; }
+.form-group { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 8px; }
+.form-group label { font-size: 11px; font-weight: bold; color: #34495e; text-transform: uppercase; letter-spacing: 0.5px; }
 
-.add-form input, .add-form select { padding: 10px; border: 1px solid #ddd; border-radius: 6px; outline: none; flex: 1; min-width: 120px; font-size: 13px; }
+.input-light { padding: 10px; border: 1px solid #ddd; border-radius: 6px; outline: none; width: 100%; font-size: 13px; background: white; color: #2c3e50; }
+
+.btn-save-rule { background: #9b59b6; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; font-size: 14px; transition: background 0.2s; height: 39px; }
+.btn-save-rule:hover { background: #8e44ad; }
+
+.mandatory-exclusion { background: #fffcf5; border: 1px solid #f39c12; padding: 12px 15px; border-radius: 6px; font-size: 13px; color: #d35400; display: flex; align-items: center; gap: 10px; }
+.lock-icon { font-size: 16px; }
+
+.add-form { display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; }
+.add-form input, .add-form select { padding: 10px; border: 1px solid #ddd; border-radius: 6px; outline: none; flex: 1; min-width: 120px; font-size: 13px; background: white; color: #2c3e50; }
 
 .btn-add { background: #2ecc71; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; font-weight: bold; flex-shrink: 0; white-space: nowrap; }
 .btn-add:hover { background: #27ae60; }
-
 .data-table { width: 100%; border-collapse: collapse; }
 .data-table th, .data-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; text-align: left; font-size: 13px; color: #2c3e50; }
 .data-table th { background: #f5f6fa; color: #7f8c8d; font-weight: normal; }

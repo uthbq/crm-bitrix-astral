@@ -1,6 +1,16 @@
 <template>
   <div class="dashboard">
-    <h2 style="margin-top: 0; color: #2c3e50;">Мой день (Статистика)</h2>
+    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f5f6fa; padding-bottom: 15px; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+      <h2 style="margin: 0; color: #2c3e50;">Мой день (Статистика)</h2>
+      
+      <div class="filters">
+        <select v-model="filters.period" @change="fetchStatsAndPlan" class="filter-select">
+          <option value="today">Сегодня</option>
+          <option value="week">За последние 7 дней</option>
+          <option value="month">За последние 30 дней</option>
+        </select>
+      </div>
+    </div>
     
     <div v-if="loading" style="color: #7f8c8d;">Загрузка данных...</div>
     <div v-else-if="error" style="color: #e74c3c;">{{ error }}</div>
@@ -9,75 +19,134 @@
       <div style="margin-bottom: 20px; color: #7f8c8d; font-size: 14px; display: flex; justify-content: space-between; align-items: center;">
         <div>
           Квалификация: <strong>{{ managerInfo.qualification }}</strong> 
-          (порог разговора: {{ managerInfo.threshold }} сек)
-        </div>
-        <div style="font-weight: bold; color: #34495e;">
-          Сегодня: {{ formatDate(todayString) }}
+          (порог: {{ managerInfo.threshold }} сек)
         </div>
       </div>
       
-      <div v-if="plan.working_days > 0" class="plans-container">
+      <div v-if="plan.working_days > 0 && filters.period === 'today'" class="plans-container">
         <h3>🎯 Выполнение плана на сегодня</h3>
         <div class="plan-card">
           <div class="plan-header">
             <span>📞 Звонки (Наборы)</span>
-            <strong>{{ todayStats.total_outbound }} / {{ dailyCallsNorm }}</strong>
+            <strong>{{ aggregatedStats.calls }} / {{ dailyCallsNorm }}</strong>
           </div>
           <div class="progress-track">
             <div class="progress-fill" :class="{ 'success': callsProgress >= 100 }" :style="{ width: Math.min(callsProgress, 100) + '%' }"></div>
           </div>
-          <small class="plan-status">{{ callsProgress >= 100 ? 'Норма выполнена!' : `Осталось: ${Math.max(0, dailyCallsNorm - todayStats.total_outbound)}` }}</small>
+          <small class="plan-status">{{ callsProgress >= 100 ? 'Норма выполнена!' : `Осталось: ${Math.max(0, dailyCallsNorm - aggregatedStats.calls)}` }}</small>
         </div>
 
         <div class="plan-card">
           <div class="plan-header">
             <span>💎 Качественные лиды</span>
-            <strong>{{ todayStats.quality_leads }} / {{ dailyLeadsNorm }}</strong>
+            <strong>{{ aggregatedStats.leads }} / {{ dailyLeadsNorm }}</strong>
           </div>
           <div class="progress-track">
             <div class="progress-fill" :class="{ 'success': leadsProgress >= 100 }" :style="{ width: Math.min(leadsProgress, 100) + '%' }"></div>
           </div>
-          <small class="plan-status">{{ leadsProgress >= 100 ? 'Норма выполнена!' : `Осталось: ${Math.max(0, dailyLeadsNorm - todayStats.quality_leads)}` }}</small>
+          <small class="plan-status">{{ leadsProgress >= 100 ? 'Норма выполнена!' : `Осталось: ${Math.max(0, dailyLeadsNorm - aggregatedStats.leads)}` }}</small>
         </div>
       </div>
 
       <div class="conversions-container">
-        <h3>📊 Воронка и конверсии (За сегодня)</h3>
+        <h3>📊 Воронка и конверсии (За выбранный период)</h3>
         <div class="conv-grid">
           <div class="conv-card">
-            <div class="conv-title">% Дозвона</div>
+            <div class="conv-title">% Дозвона (Системная)</div>
             <div class="conv-value" :class="connectionRate < 30 ? 'text-danger' : 'text-success'">{{ connectionRate }}%</div>
-            <div class="conv-formula">Разговоры ({{ todayStats.valid_conversations }}) / Наборы ({{ todayStats.total_outbound || 0 }})</div>
+            <div class="conv-formula">Разговоры ({{ aggregatedStats.conversations }}) / Наборы ({{ aggregatedStats.calls }})</div>
           </div>
-          <div class="conv-card">
-            <div class="conv-title">Лид → Качественный</div>
-            <div class="conv-value text-primary">{{ qualityRate }}%</div>
-            <div class="conv-formula">Кач. лиды ({{ todayStats.quality_leads }}) / Взято в работу ({{ todayStats.unique_leads || 0 }})</div>
+
+          <!-- КАРТОЧКА ПРАВИЛА (С ПРОВЕРКОЙ НА НУЛЬ) -->
+          <div class="conv-card" v-for="rule in conversionRules" :key="rule.id">
+            <div class="conv-title">База "{{ rule.base_name }}"</div>
+            
+            <div v-if="!aggregatedBaseStats[rule.base_name] || !aggregatedBaseStats[rule.base_name][rule.denominator]" class="conv-value text-muted" style="font-size: 14px; margin-top: 10px;">
+              Нет данных для расчёта
+            </div>
+            <div v-else class="conv-value text-primary">
+              {{ Math.round(((aggregatedBaseStats[rule.base_name][rule.numerator] || 0) / aggregatedBaseStats[rule.base_name][rule.denominator]) * 100) }}%
+            </div>
+            
+            <div class="conv-formula">
+              {{ vocab[rule.numerator] }} / {{ vocab[rule.denominator] }}
+            </div>
+            <div class="conv-excluded">Исключено: {{ JSON.parse(rule.excluded_statuses).join(', ') }}</div>
           </div>
-          <div class="conv-card">
-            <div class="conv-title">Качественный → Оплата</div>
-            <div class="conv-value text-success">{{ winRate }}%</div>
-            <div class="conv-formula">Оплаты ({{ todayStats.paid_deals }}) / Кач. лиды ({{ todayStats.quality_leads || 0 }})</div>
-          </div>
+
         </div>
       </div>
 
-      <div v-if="weakSpots.length > 0" class="weak-spots-container">
+      <div v-if="weakSpots.length > 0 && filters.period === 'today'" class="weak-spots-container">
         <h3>⚠️ Зоны роста (Слабые места)</h3>
         <ul class="weak-spots-list">
           <li v-for="(spot, idx) in weakSpots" :key="idx">{{ spot }}</li>
         </ul>
       </div>
 
+      <div class="split-layout">
+        <div class="card" style="flex: 1;">
+          <h3>📦 Остаток вашей базы</h3>
+          <div class="remainder-grid">
+            <div class="rem-item">
+              <span class="rem-label">Импорт (нетронутые):</span>
+              <span class="rem-value text-primary">{{ remainder.import_count || 0 }}</span>
+            </div>
+            <div class="rem-item">
+              <span class="rem-label">Взято в работу (в процессе):</span>
+              <span class="rem-value text-warning">{{ remainder.in_progress_count || 0 }}</span>
+            </div>
+            <div class="rem-item">
+              <span class="rem-label">Качественные (цель):</span>
+              <span class="rem-value text-success">{{ remainder.quality_count || 0 }}</span>
+            </div>
+            <div class="rem-item">
+              <span class="rem-label">Отказы / Слиты:</span>
+              <span class="rem-value text-danger">{{ remainder.refusal_count || 0 }}</span>
+            </div>
+            <div class="rem-item" style="border-top: 1px solid #eee; padding-top: 10px; margin-top: 10px;">
+              <span class="rem-label"><strong>Всего закреплено за вами:</strong></span>
+              <span class="rem-value"><strong>{{ remainder.total || 0 }}</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="flex: 1.5; border-left: 4px solid #f39c12;">
+          <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+            <button @click="activeListTab = 'retries'" :class="['tab-btn', { active: activeListTab === 'retries' }]">Недозвоны ({{ workLists.retries?.length || 0 }})</button>
+            <button @click="activeListTab = 'returns'" :class="['tab-btn', { active: activeListTab === 'returns' }]">Догрев / Кросс ({{ workLists.returns?.length || 0 }})</button>
+            <button @click="activeListTab = 'new'" :class="['tab-btn', { active: activeListTab === 'new' }]">Свежие в работе ({{ workLists.new_in_work?.length || 0 }})</button>
+          </div>
+          
+          <div class="scrollable-table">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID Лида</th>
+                  <th>База</th>
+                  <th style="text-align: right;">Звонков</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!currentWorkList || currentWorkList.length === 0">
+                  <td colspan="3" class="empty">В этом списке нет лидов.</td>
+                </tr>
+                <tr v-for="lead in currentWorkList" :key="lead.bitrix_lead_id">
+                  <td><strong>#{{ lead.bitrix_lead_id }}</strong></td>
+                  <td>{{ formatBaseName(lead.base_name) }}</td>
+                  <td style="text-align: right; font-weight: bold; color: #7f8c8d;">{{ lead.calls_count }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      
       <div v-if="stats.length === 0" style="color: #7f8c8d; padding: 20px 0; text-align: center; border: 1px dashed #ccc; border-radius: 8px; margin-top: 20px;">
-        У вас пока нет активности. Сделайте первый звонок в Битрикс24!
+        У вас пока нет активности за этот период.
       </div>
       
       <div v-else>
-        <div class="chart-container" style="height: 300px; margin-bottom: 30px; margin-top: 30px;">
-          <Bar :data="chartData" :options="chartOptions" />
-        </div>
-
         <table class="stats-table">
           <thead>
             <tr>
@@ -86,6 +155,7 @@
               <th>Разговоры (> {{ managerInfo.threshold }} сек)</th>
               <th>Взято лидов</th>
               <th>Кач. Лиды</th>
+              <th>Передано</th>
               <th>Оплаты</th>
               <th>Сумма (₽)</th>
             </tr>
@@ -97,6 +167,7 @@
               <td><strong>{{ day.valid_conversations }}</strong></td>
               <td>{{ day.unique_leads }}</td>
               <td style="color: #27ae60; font-weight: bold;">{{ day.quality_leads }}</td>
+              <td style="color: #8e44ad; font-weight: bold;">{{ day.transfers }}</td>
               <td>{{ day.paid_deals }}</td>
               <td><strong>{{ day.amount_sum.toLocaleString('ru-RU') }}</strong></td>
             </tr>
@@ -108,59 +179,70 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue';
-import { Bar } from 'vue-chartjs';
-import { 
-  Chart as ChartJS, 
-  Title, 
-  Tooltip, 
-  Legend, 
-  BarElement, 
-  CategoryScale, 
-  LinearScale 
-} from 'chart.js';
+import { ref, onMounted, watch, computed, reactive } from 'vue';
 
-ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale);
+const props = defineProps<{ managerId: string | number; }>();
 
-const props = defineProps<{
-  managerId: string | number;
-}>();
-
-interface DailyStat {
-  date: string;
-  total_outbound: number;
-  valid_conversations: number;
-  unique_leads: number;
-  quality_leads: number;
-  paid_deals: number;
-  amount_sum: number;
-}
-
-const stats = ref<DailyStat[]>([]);
+const stats = ref<any[]>([]);
+const basesStats = ref<any[]>([]); 
 const plan = ref({ working_days: 0, calls_norm: 0, leads_norm: 0 });
 const managerInfo = ref({ qualification: 'обычный', threshold: 44 });
+const remainder = ref<any>({});
+const workLists = ref<any>({ retries: [], returns: [], new_in_work: [] });
+const activeListTab = ref('retries');
+const conversionRules = ref<any[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 
-const todayString = new Date().toISOString().split('T')[0];
+const filters = reactive({ period: 'today' });
+
+const vocab: Record<string, string> = {
+  quality_leads: 'Кач. лиды',
+  paid_deals: 'Оплаты',
+  transfers: 'Передачи',
+  unique_leads: 'Взято в работу',
+  total_calls: 'Все наборы',
+  valid_conversations: 'Разговоры'
+};
+
+const getDatesForPeriod = (period: string) => {
+  const today = new Date();
+  const end = today.toISOString().split('T')[0];
+  let start = end;
+  if (period === 'week') {
+    const d = new Date(); d.setDate(d.getDate() - 7);
+    start = d.toISOString().split('T')[0];
+  } else if (period === 'month') {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    start = d.toISOString().split('T')[0];
+  }
+  return { start, end };
+};
 
 const fetchStatsAndPlan = async () => {
   loading.value = true;
   try {
-    const url = props.managerId 
-      ? `http://localhost:3000/api/dashboard?manager_id=${props.managerId}`
-      : `http://localhost:3000/api/dashboard`;
-      
-    const currentMonth = todayString.slice(0, 7);
+    const { start, end } = getDatesForPeriod(filters.period);
+    const dateParams = `startDate=${start}&endDate=${end}`;
+    
+    const url = props.managerId ? `http://localhost:3000/api/dashboard?manager_id=${props.managerId}&${dateParams}` : `http://localhost:3000/api/dashboard?${dateParams}`;
+    
+    const currentMonth = new Date().toISOString().slice(0, 7);
     const planUrl = `http://localhost:3000/api/plans?manager_id=${props.managerId}&month=${currentMonth}`;
 
-    const [statsRes, planRes] = await Promise.all([
+    const [statsRes, planRes, rulesRes] = await Promise.all([
       fetch(url),
-      props.managerId ? fetch(planUrl) : Promise.resolve(null)
+      props.managerId ? fetch(planUrl) : Promise.resolve(null),
+      fetch('http://localhost:3000/api/conversions')
     ]);
 
     if (props.managerId) {
-       const infoRes = await fetch(`http://localhost:3000/api/users/${props.managerId}/info`);
+       const [infoRes, remRes, workRes] = await Promise.all([
+         fetch(`http://localhost:3000/api/users/${props.managerId}/info`),
+         fetch(`http://localhost:3000/api/manager/${props.managerId}/remainder`),
+         fetch(`http://localhost:3000/api/manager/${props.managerId}/work-list`)
+       ]);
+       
        if (infoRes.ok) {
            const info = await infoRes.json();
            managerInfo.value = {
@@ -168,92 +250,92 @@ const fetchStatsAndPlan = async () => {
                threshold: info.qualification === 'ведущий' ? 59 : 44
            };
        }
+       if (remRes.ok) remainder.value = await remRes.json();
+       if (workRes.ok) workLists.value = await workRes.json();
     }
     
-    if (!statsRes.ok) throw new Error('Ошибка загрузки статистики');
-    stats.value = await statsRes.json();
-    
-    if (planRes && planRes.ok) {
-      plan.value = await planRes.json();
+    if (statsRes.ok) {
+      const rawStats = await statsRes.json();
+      stats.value = rawStats;
+      basesStats.value = rawStats; 
     }
+    
+    if (planRes && planRes.ok) plan.value = await planRes.json();
+    if (rulesRes && rulesRes.ok) conversionRules.value = await rulesRes.json();
     
     error.value = null;
   } catch (err) {
     error.value = 'Не удалось подключиться к серверу';
-    console.error(err);
   } finally {
     loading.value = false;
   }
 };
 
-const formatDate = (dateStr: string) => {
-  if (!dateStr) return '';
-  return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit' }).format(new Date(dateStr));
-};
-
 onMounted(fetchStatsAndPlan);
 watch(() => props.managerId, fetchStatsAndPlan);
 
-const todayStats = computed(() => {
-  return stats.value.find(s => s.date === todayString) || {
-    total_outbound: 0, valid_conversations: 0, unique_leads: 0, quality_leads: 0, paid_deals: 0, amount_sum: 0
+const currentWorkList = computed(() => workLists.value[activeListTab.value] || []);
+const formatBaseName = (nameStr: string) => {
+  if (!nameStr) return 'Без базы';
+  try {
+    const parsed = JSON.parse(nameStr);
+    if (Array.isArray(parsed)) return parsed.join(', ');
+    return nameStr;
+  } catch (e) { return nameStr; }
+};
+const formatDate = (dateStr: string) => dateStr ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit' }).format(new Date(dateStr)) : '';
+
+const aggregatedStats = computed(() => {
+  return {
+    calls: stats.value.reduce((acc, s) => acc + (s.total_outbound || 0), 0),
+    conversations: stats.value.reduce((acc, s) => acc + (s.valid_conversations || 0), 0),
+    leads: stats.value.reduce((acc, s) => acc + (s.quality_leads || 0), 0),
+    unique: stats.value.reduce((acc, s) => acc + (s.unique_leads || 0), 0)
   };
+});
+
+const aggregatedBaseStats = computed(() => {
+  const aggs: Record<string, any> = {};
+  conversionRules.value.forEach(rule => {
+    aggs[rule.base_name] = {
+      quality_leads: aggregatedStats.value.leads,
+      unique_leads: aggregatedStats.value.unique,
+      total_calls: aggregatedStats.value.calls,
+      valid_conversations: aggregatedStats.value.conversations,
+      paid_deals: stats.value.reduce((acc, s) => acc + (s.paid_deals || 0), 0) // Учитываем сделки
+    };
+  });
+  return aggs;
 });
 
 const dailyCallsNorm = computed(() => plan.value.working_days ? Math.round(plan.value.calls_norm / plan.value.working_days) : 0);
 const dailyLeadsNorm = computed(() => plan.value.working_days ? Math.round(plan.value.leads_norm / plan.value.working_days) : 0);
-const callsProgress = computed(() => dailyCallsNorm.value === 0 ? 0 : Math.round((todayStats.value.total_outbound / dailyCallsNorm.value) * 100));
-const leadsProgress = computed(() => dailyLeadsNorm.value === 0 ? 0 : Math.round((todayStats.value.quality_leads / dailyLeadsNorm.value) * 100));
+const callsProgress = computed(() => dailyCallsNorm.value === 0 ? 0 : Math.round((aggregatedStats.value.calls / dailyCallsNorm.value) * 100));
+const leadsProgress = computed(() => dailyLeadsNorm.value === 0 ? 0 : Math.round((aggregatedStats.value.leads / dailyLeadsNorm.value) * 100));
 
-const connectionRate = computed(() => todayStats.value.total_outbound ? Math.round((todayStats.value.valid_conversations / todayStats.value.total_outbound) * 100) : 0);
-const qualityRate = computed(() => todayStats.value.unique_leads ? Math.round((todayStats.value.quality_leads / todayStats.value.unique_leads) * 100) : 0);
-const winRate = computed(() => todayStats.value.quality_leads ? Math.round((todayStats.value.paid_deals / todayStats.value.quality_leads) * 100) : 0);
+const connectionRate = computed(() => aggregatedStats.value.calls ? Math.round((aggregatedStats.value.conversations / aggregatedStats.value.calls) * 100) : 0);
+const qualityRate = computed(() => aggregatedStats.value.unique ? Math.round((aggregatedStats.value.leads / aggregatedStats.value.unique) * 100) : 0);
 
 const weakSpots = computed(() => {
   const spots = [];
-  const ts = todayStats.value;
-  
-  if (ts.total_outbound > 10 && connectionRate.value < 30) {
-    spots.push(`Низкий % дозвона (${connectionRate.value}%). Возможно, вы звоните в неудобное для клиентов время, либо проблемы с качеством базы.`);
-  }
-  if (ts.valid_conversations > 5 && qualityRate.value < 10) {
-    spots.push(`Мало качественных лидов при состоявшихся разговорах. Проверьте скрипт или отработку возражений.`);
-  }
-  if (dailyCallsNorm.value > 0 && ts.total_outbound < (dailyCallsNorm.value / 2) && new Date().getHours() > 14) {
-    spots.push(`Уже вторая половина дня, а выполнено менее 50% плана по звонкам. Ускоряйтесь!`);
-  }
+  const ts = aggregatedStats.value;
+  if (ts.calls > 10 && connectionRate.value < 30) spots.push(`Низкий % дозвона (${connectionRate.value}%). Возможно, вы звоните в неудобное для клиентов время, либо проблемы с качеством базы.`);
+  if (ts.conversations > 5 && qualityRate.value < 10) spots.push(`Мало качественных лидов при состоявшихся разговорах. Проверьте скрипт или отработку возражений.`);
+  if (dailyCallsNorm.value > 0 && ts.calls < (dailyCallsNorm.value / 2) && new Date().getHours() > 14) spots.push(`Уже вторая половина дня, а выполнено менее 50% плана по звонкам. Ускоряйтесь!`);
   return spots;
 });
-
-const chartData = computed(() => {
-  const reversedStats = [...stats.value].reverse();
-  return {
-    labels: reversedStats.map(day => formatDate(day.date)),
-    datasets: [
-      { label: 'Исходящие наборы', backgroundColor: '#3498db', data: reversedStats.map(day => day.total_outbound) },
-      { label: `Разговоры (> ${managerInfo.value.threshold} сек)`, backgroundColor: '#2ecc71', data: reversedStats.map(day => day.valid_conversations) }
-    ]
-  };
-});
-
-const chartOptions = {
-  responsive: true, maintainAspectRatio: false,
-  plugins: { legend: { position: 'top' as const } },
-  scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
-};
 </script>
 
 <style scoped>
 .dashboard { font-family: Arial, sans-serif; width: 100%; }
 
-.plans-container, .conversions-container, .weak-spots-container {
-  background: white;
-  padding: 20px;
-  border-radius: 8px;
-  margin-bottom: 25px;
-  border: 1px solid #eee;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.03);
-}
+.filter-select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; outline: none; background: white; color: #2c3e50; cursor: pointer; }
+.filters { display: flex; gap: 15px; align-items: center; }
+
+.tab-btn { background: #ecf0f1; border: none; padding: 8px 15px; border-radius: 6px; cursor: pointer; color: #7f8c8d; font-size: 13px; font-weight: bold; transition: 0.2s; }
+.tab-btn.active { background: #3498db; color: white; }
+
+.plans-container, .conversions-container, .weak-spots-container { background: white; padding: 20px; border-radius: 8px; margin-bottom: 25px; border: 1px solid #eee; box-shadow: 0 2px 8px rgba(0,0,0,0.03); }
 .plans-container { display: flex; gap: 20px; flex-wrap: wrap; background: #f8f9fa; }
 h3 { width: 100%; margin-top: 0; margin-bottom: 15px; color: #2c3e50; font-size: 18px; }
 
@@ -265,18 +347,30 @@ h3 { width: 100%; margin-top: 0; margin-bottom: 15px; color: #2c3e50; font-size:
 .plan-status { color: #7f8c8d; font-size: 12px; }
 
 .conv-grid { display: flex; gap: 15px; flex-wrap: wrap; }
-.conv-card { flex: 1; min-width: 200px; padding: 15px; background: #fdfdfd; border-left: 4px solid #3498db;
- border-radius: 6px; border-top: 1px solid #eee; border-right: 1px solid #eee; border-bottom: 1px solid #eee;}
-.conv-title { font-size: 14px; color: #7f8c8d; font-weight: bold; margin-bottom: 5px; }
+.conv-card { flex: 1; min-width: 200px; padding: 15px; background: #fdfdfd; border-left: 4px solid #3498db; border-radius: 6px; border-top: 1px solid #eee; border-right: 1px solid #eee; border-bottom: 1px solid #eee; position: relative;}
+.conv-title { font-size: 13px; color: #7f8c8d; font-weight: bold; margin-bottom: 5px; }
 .conv-value { font-size: 28px; font-weight: bold; margin-bottom: 5px; }
 .conv-formula { font-size: 11px; color: #95a5a6; }
+.conv-excluded { font-size: 10px; color: #d35400; margin-top: 8px; border-top: 1px dashed #eee; padding-top: 5px; }
+.text-muted { color: #95a5a6 !important; }
 
 .weak-spots-container { border-left: 4px solid #f39c12; background: #fffcf5; }
 .weak-spots-list { margin: 0; padding-left: 20px; color: #d35400; font-size: 14px; line-height: 1.6; }
 
-.text-danger { color: #e74c3c; }
-.text-success { color: #27ae60; }
+.split-layout { display: flex; gap: 20px; margin-bottom: 25px; flex-wrap: wrap; }
+.card { background: white; padding: 20px; border-radius: 8px; border: 1px solid #eee; box-shadow: 0 2px 8px rgba(0,0,0,0.03); min-width: 300px; }
+.remainder-grid { display: flex; flex-direction: column; gap: 10px; }
+.rem-item { display: flex; justify-content: space-between; font-size: 14px; color: #34495e; }
+.rem-value { font-weight: bold; }
 .text-primary { color: #3498db; }
+.text-success { color: #27ae60; }
+.text-danger { color: #e74c3c; }
+.text-warning { color: #f39c12; }
+
+.scrollable-table { max-height: 250px; overflow-y: auto; }
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th, .data-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; text-align: left; font-size: 13px; }
+.data-table th { background: #f5f6fa; color: #7f8c8d; font-weight: normal; position: sticky; top: 0; }
 
 .stats-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
 .stats-table th, .stats-table td { border: 1px solid #ddd; padding: 12px; text-align: left; color: #2c3e50; }

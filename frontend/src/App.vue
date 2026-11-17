@@ -4,6 +4,7 @@ import ManagerDashboard from './components/ManagerDashboard.vue';
 import DictionariesManager from './components/DictionariesManager.vue';
 import DirectorDashboard from './components/DirectorDashboard.vue';
 import PlansManager from './components/PlansManager.vue';
+import RatingsBoard from './components/RatingsBoard.vue';
 
 const token = ref('');
 const authError = ref('');
@@ -138,8 +139,6 @@ const logout = () => {
 
 <template>
   <div class="app-layout">
-    
-    <!-- Боковое меню -->
     <div v-if="token" class="sidebar">
       <h2 class="sidebar-title">CRM System</h2>
       
@@ -152,83 +151,45 @@ const logout = () => {
       </div>
       
       <nav class="nav-menu">
-        <button 
-          @click="activeTab = 'dashboard'" 
-          :class="['nav-btn', { active: activeTab === 'dashboard' }]"
-        >
-          📊 Дашборд
-        </button>
-        
-        <button 
-          v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
-          @click="activeTab = 'users'" 
-          :class="['nav-btn', { active: activeTab === 'users' }]"
-        >
-          👥 Сотрудники
-        </button>
-
-        <button 
-          v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
-          @click="activeTab = 'plans'" 
-          :class="['nav-btn', { active: activeTab === 'plans' }]"
-        >
-          📅 Планы и Нормативы
-        </button>
-
-        <button 
-          v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" 
-          @click="activeTab = 'dictionaries'" 
-          :class="['nav-btn', { active: activeTab === 'dictionaries' }]"
-        >
-          📁 Справочники
-        </button>
+        <button @click="activeTab = 'dashboard'" :class="['nav-btn', { active: activeTab === 'dashboard' }]">📊 Дашборд</button>
+        <button @click="activeTab = 'ratings'" :class="['nav-btn', { active: activeTab === 'ratings' }]">🏆 Доска почёта</button>
+        <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'users'" :class="['nav-btn', { active: activeTab === 'users' }]">👥 Сотрудники</button>
+        <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'plans'" :class="['nav-btn', { active: activeTab === 'plans' }]">📅 Планы и Нормативы</button>
+        <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'dictionaries'" :class="['nav-btn', { active: activeTab === 'dictionaries' }]">📁 Справочники</button>
       </nav>
       
       <button @click="logout" class="btn-logout">Выйти</button>
     </div>
 
     <div class="main-content">
-      
-      <div v-if="!token" class="login-card">
-        <h2 class="login-title">Вход в систему</h2>
-        <input v-model="loginUser" placeholder="Логин" class="input-dark" />
-        <div class="password-input">
-          <input v-model="loginPass" :type="showLoginPass ? 'text' : 'password'" placeholder="Пароль" class="input-dark no-margin-bottom" @keyup.enter="login" />
-          <button @click="showLoginPass = !showLoginPass" class="btn-eye">{{ showLoginPass ? '🙈' : '👁️' }}</button>
+      <div v-if="!token" class="login-wrapper">
+        <div class="login-card">
+          <h2 class="login-title">Вход в систему</h2>
+          <input v-model="loginUser" placeholder="Логин" class="input-dark" />
+          <div class="password-input">
+            <input v-model="loginPass" :type="showLoginPass ? 'text' : 'password'" placeholder="Пароль" class="input-dark no-margin-bottom" @keyup.enter="login" />
+            <button @click="showLoginPass = !showLoginPass" class="btn-eye">{{ showLoginPass ? '🙈' : '👁️' }}</button>
+          </div>
+          <button @click="login" class="btn-primary w-full">Войти</button>
+          <p class="error-msg">{{ authError }}</p>
         </div>
-        <button @click="login" class="btn-primary w-full">Войти</button>
-        <p class="error-msg">{{ authError }}</p>
       </div>
 
       <div v-else class="content-wrapper">
-        
         <div v-if="activeTab === 'users' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="card add-user-card">
           <h3 class="card-title">Добавление менеджера</h3>
           
           <label class="form-label">Поиск по сотрудникам Битрикс24</label>
           <div class="autocomplete-wrapper">
-            <input 
-              v-model="searchQuery" 
-              @focus="showDropdown = true" 
-              @blur="setTimeout(() => showDropdown = false, 200)"
-              placeholder="Начните вводить имя..." 
-              class="input-light"
-            />
+            <input v-model="searchQuery" @focus="showDropdown = true" @blur="setTimeout(() => showDropdown = false, 200)" placeholder="Начните вводить имя..." class="input-light" />
             
             <div v-if="showDropdown && filteredBitrixUsers.length" class="dropdown-list">
-              <div 
-                v-for="user in filteredBitrixUsers" 
-                :key="user.id" 
-                @click="selectUser(user)" 
-                class="dropdown-item"
-              >
+              <div v-for="user in filteredBitrixUsers" :key="user.id" @click="selectUser(user)" class="dropdown-item">
                 {{ user.name }} <span class="text-muted">(ID: {{ user.id }})</span>
               </div>
             </div>
             
-            <div v-if="showDropdown && !filteredBitrixUsers.length" class="dropdown-list empty-state">
-              Сотрудник не найден
-            </div>
+            <div v-if="showDropdown && !filteredBitrixUsers.length" class="dropdown-list empty-state">Сотрудник не найден</div>
           </div>
 
           <div class="form-row">
@@ -254,316 +215,129 @@ const logout = () => {
           <button @click="createUser" class="btn-success w-full">Сохранить в базу</button>
         </div>
 
-        <div v-if="activeTab === 'plans' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full max-w-1000 bg-transparent">
+        <div v-if="activeTab === 'plans' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent">
           <PlansManager />
         </div>
 
-        <div v-if="activeTab === 'dictionaries' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full max-w-1000 bg-transparent">
+        <div v-if="activeTab === 'dictionaries' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent">
           <DictionariesManager />
         </div>
 
-        <div v-if="activeTab === 'dashboard'" class="card w-full max-w-1000">
+        <div v-if="activeTab === 'dashboard'" class="card w-full">
           <ManagerDashboard v-if="userRole === 'MANAGER'" :managerId="currentManagerId" />
           <DirectorDashboard v-else />
         </div>
 
+        <div v-if="activeTab === 'ratings'" class="w-full bg-transparent">
+          <RatingsBoard />
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <style>
-/* Базовые стили */
-
-/* Лейаут */
-.app-layout {
-  display: flex;
-  min-height: 100vh;
-}
-
-/* Боковое меню */
-.sidebar {
-  width: 260px;
-  background-color: #2c3e50;
-  color: white;
-  display: flex;
-  flex-direction: column;
-  padding: 20px;
-  box-sizing: border-box;
-}
-.sidebar-title {
-  margin-top: 0;
-  padding-bottom: 20px;
-  border-bottom: 1px solid #34495e;
-}
-.user-profile {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-  margin-bottom: 30px;
-}
-.avatar {
-  width: 45px;
-  height: 45px;
-  background: #3498db;
-  border-radius: 50%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  font-size: 20px;
-}
-.user-name {
-  font-weight: bold;
-  font-size: 16px;
-}
-.user-role {
-  font-size: 13px;
-  color: #bdc3c7;
-}
-
-/* Навигация */
-.nav-menu {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.nav-btn {
-  background: transparent;
-  border: none;
-  color: white;
-  text-align: left;
-  padding: 12px 15px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 15px;
-  transition: background 0.2s;
-  width: 100%;
-  box-sizing: border-box;
-}
-.nav-btn.active, .nav-btn:hover {
-  background: #34495e;
-}
-.btn-logout {
-  margin-top: auto;
-  background: #e74c3c;
-  border: none;
-  color: white;
-  padding: 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: bold;
-  transition: background 0.2s;
-  width: 100%;
-}
-.btn-logout:hover {
-  background: #c0392b;
-}
-
-/* Основной контент */
-.main-content {
-  flex: 1;
+html, body {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
   background-color: #f5f6fa;
-  padding: 40px;
+}
+
+#app {
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+}
+
+.app-layout { 
+  display: flex; 
+  min-height: 100vh; 
+  width: 100%;
+}
+
+.sidebar { 
+  width: 260px; 
+  min-width: 260px;
+  background-color: #2c3e50; 
+  color: white; 
+  display: flex; 
+  flex-direction: column; 
+  padding: 20px; 
+  box-sizing: border-box; 
+}
+.sidebar-title { margin-top: 0; padding-bottom: 20px; border-bottom: 1px solid #34495e; }
+.user-profile { display: flex; align-items: center; gap: 15px; margin-bottom: 30px; }
+.avatar { width: 45px; height: 45px; background: #3498db; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 20px; }
+.user-name { font-weight: bold; font-size: 16px; }
+.user-role { font-size: 13px; color: #bdc3c7; }
+
+.nav-menu { display: flex; flex-direction: column; gap: 10px; }
+.nav-btn { background: transparent; border: none; color: white; text-align: left; padding: 12px 15px; border-radius: 6px; cursor: pointer; font-size: 15px; transition: background 0.2s; width: 100%; box-sizing: border-box; }
+.nav-btn.active, .nav-btn:hover { background: #34495e; }
+.btn-logout { margin-top: auto; background: #e74c3c; border: none; color: white; padding: 12px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: background 0.2s; width: 100%; }
+.btn-logout:hover { background: #c0392b; }
+
+.main-content { 
+  flex: 1; 
+  background-color: #f5f6fa; 
+  padding: 40px; 
+  box-sizing: border-box; 
+  overflow-x: hidden; 
+}
+
+.content-wrapper { 
+  width: 100%; 
+}
+
+.login-wrapper {
   display: flex;
+  width: 100%;
+  height: 80vh;
   justify-content: center;
-  align-items: flex-start;
-  box-sizing: border-box;
-  overflow-x: hidden;
-}
-.content-wrapper {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-}
-.card {
-  background: white;
-  padding: 30px;
-  border-radius: 12px;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-}
-.card-title {
-  margin-top: 0;
-  color: #2c3e50;
-  border-bottom: 2px solid #f5f6fa;
-  padding-bottom: 15px;
-}
-.login-card {
-  background: white;
-  padding: 40px;
-  border-radius: 12px;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-  width: 100%;
-  max-width: 350px;
-  margin-top: 10vh;
-}
-.login-title {
-  text-align: center;
-  margin-top: 0;
-  color: #2c3e50;
-}
-.add-user-card {
-  width: 100%;
-  max-width: 500px;
+  align-items: center;
 }
 
-/* Формы и поля ввода */
-.form-label {
-  display: block;
-  margin-bottom: 5px;
-  color: #7f8c8d;
-  font-size: 14px;
-}
-.form-row {
-  display: flex;
-  gap: 15px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
-.form-group {
-  flex: 1;
-  min-width: 200px;
-}
-.input-dark {
-  width: 100%;
-  padding: 12px;
-  margin-bottom: 15px;
-  background: #2c3e50;
-  color: white;
-  border: 1px solid #34495e;
-  border-radius: 6px;
-  box-sizing: border-box;
-  outline: none;
-}
-.input-dark.no-margin-bottom {
-  margin-bottom: 0;
-  border-radius: 6px 0 0 6px;
-}
-.input-light {
-  width: 100%;
-  padding: 12px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  box-sizing: border-box;
-  outline: none;
-  font-size: 15px;
-}
-.password-input {
-  display: flex;
-  margin-bottom: 20px;
-  width: 100%;
-}
-.btn-eye {
-  background: #34495e;
-  border: none;
-  color: white;
-  padding: 0 12px;
-  border-radius: 0 6px 6px 0;
-  cursor: pointer;
-}
+.card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+.card-title { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #f5f6fa; padding-bottom: 15px; }
+.login-card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 350px; }
+.login-title { text-align: center; margin-top: 0; color: #2c3e50; }
+.add-user-card { width: 100%; max-width: 500px; }
 
-.autocomplete-wrapper {
-  position: relative;
-  margin-bottom: 20px;
-}
-.dropdown-list {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  background: white;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  max-height: 250px;
-  overflow-y: auto;
-  z-index: 1000;
-  box-shadow: 0 8px 16px rgba(0,0,0,0.1);
-  margin-top: 5px;
-}
-.dropdown-item {
-  padding: 12px;
-  cursor: pointer;
-  border-bottom: 1px solid #f5f6fa;
-  font-size: 14px;
-}
-.dropdown-item:last-child {
-  border-bottom: none;
-}
-.dropdown-item:hover {
-  background-color: #f0f4f8;
-}
-.empty-state {
-  padding: 12px;
-  color: #7f8c8d;
-}
+.form-label { display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px; }
+.form-row { display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }
+.form-group { flex: 1; min-width: 200px; }
+.input-dark { width: 100%; padding: 12px; margin-bottom: 15px; background: #2c3e50; color: white; border: 1px solid #34495e; border-radius: 6px; box-sizing: border-box; outline: none; }
+.input-dark.no-margin-bottom { margin-bottom: 0; border-radius: 6px 0 0 6px; }
+.input-light { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; outline: none; font-size: 15px; }
+.password-input { display: flex; margin-bottom: 20px; width: 100%; }
+.btn-eye { background: #34495e; border: none; color: white; padding: 0 12px; border-radius: 0 6px 6px 0; cursor: pointer; }
 
-.btn-primary {
-  background: #3498db;
-  color: white;
-  border: none;
-  padding: 14px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 16px;
-  font-weight: bold;
-}
-.btn-primary:hover {
-  background: #2980b9;
-}
-.btn-success {
-  background: #2ecc71;
-  color: white;
-  border: none;
-  padding: 14px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 16px;
-  font-weight: bold;
-}
-.btn-success:hover {
-  background: #27ae60;
-}
-.w-full {
-  width: 100%;
-}
-.max-w-1000 {
-  max-width: 1000px;
-}
-.mb-4 {
-  margin-bottom: 25px;
-}
-.bg-transparent {
-  background: transparent;
-  padding: 0;
-}
-.text-muted {
-  color: #95a5a6;
-  font-size: 12px;
-}
-.error-msg {
-  color: #e74c3c;
-  text-align: center;
-  margin-bottom: 0;
-  min-height: 20px;
-  margin-top: 10px;
-}
+.autocomplete-wrapper { position: relative; margin-bottom: 20px; }
+.dropdown-list { position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #ddd; border-radius: 6px; max-height: 250px; overflow-y: auto; z-index: 1000; box-shadow: 0 8px 16px rgba(0,0,0,0.1); margin-top: 5px; }
+.dropdown-item { padding: 12px; cursor: pointer; border-bottom: 1px solid #f5f6fa; font-size: 14px; }
+.dropdown-item:last-child { border-bottom: none; }
+.dropdown-item:hover { background-color: #f0f4f8; }
+.empty-state { padding: 12px; color: #7f8c8d; }
+
+.btn-primary { background: #3498db; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; }
+.btn-primary:hover { background: #2980b9; }
+.btn-success { background: #2ecc71; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; }
+.btn-success:hover { background: #27ae60; }
+.w-full { width: 100%; }
+
+.mb-4 { margin-bottom: 25px; }
+.bg-transparent { background: transparent; padding: 0; }
+.text-muted { color: #95a5a6; font-size: 12px; }
+.error-msg { color: #e74c3c; text-align: center; margin-bottom: 0; min-height: 20px; margin-top: 10px; }
 
 @media (max-width: 768px) {
-  .app-layout {
-    flex-direction: column;
-  }
-  .sidebar {
-    width: 100%;
-    padding: 15px;
-  }
-  .main-content {
-    padding: 20px 10px;
-  }
-  .form-row {
-    flex-direction: column;
-    gap: 0;
-  }
-  .form-group {
-    width: 100%;
-  }
+  .app-layout { flex-direction: column; }
+  .sidebar { width: 100%; padding: 15px; min-width: 100%; }
+  .main-content { padding: 20px 10px; }
+  .form-row { flex-direction: column; gap: 0; }
+  .form-group { width: 100%; }
 }
 </style>

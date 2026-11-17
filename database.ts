@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import bcrypt from 'bcrypt';
 
 const db: Database.Database = new Database('app.db', { verbose: console.log });
 
@@ -40,6 +41,7 @@ db.exec(`
     product_id INTEGER,
     inn TEXT,
     status_id TEXT,
+    status_semantic TEXT,
     manager_id INTEGER,
     is_quality BOOLEAN DEFAULT 0,
     refusal_reason_id INTEGER,
@@ -115,8 +117,35 @@ db.exec(`
     leads_norm INTEGER DEFAULT 0,
     UNIQUE(manager_id, month)
   );
+
+  CREATE TABLE IF NOT EXISTS conversion_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    base_id INTEGER UNIQUE NOT NULL,
+    numerator TEXT NOT NULL,
+    denominator TEXT NOT NULL,
+    calc_type TEXT NOT NULL,
+    product_type TEXT DEFAULT 'all',
+    cycle_type TEXT DEFAULT 'all',
+    excluded_statuses TEXT DEFAULT '["IMPORT"]',
+    version INTEGER DEFAULT 1,
+    FOREIGN KEY (base_id) REFERENCES bases(id) ON DELETE CASCADE
+  );
 `);
 
-console.log("База данных и таблицы успешно созданы!");
+const adminExists = db.prepare("SELECT id FROM users WHERE login = 'DIRECTOR'").get();
+if (!adminExists) {
+    try {
+        const hash = bcrypt.hashSync('qwerty123', 10);
+        db.prepare(`
+            INSERT INTO users (login, password_hash, role) 
+            VALUES (?, ?, ?)
+        `).run('DIRECTOR', hash, 'DIRECTOR');
+        console.log("✅ Учетная запись DIRECTOR (пароль: qwerty123) успешно создана!");
+    } catch (err: any) {
+        console.error("❌ Ошибка при создании администратора:", err.message);
+    }
+}
+
+console.log("✅ База данных и таблицы успешно инициализированы!");
 
 export default db;
