@@ -228,10 +228,8 @@ app.get('/api/sync-leads', (req: any, res: any) => {
                         const statusSemantic = lead.status ? lead.status.semantic : null;
                         const isQuality = (statusSemantic === 'S' || lead.isConverted) ? 1 : 0;
                         
-                        // Сохраняем оригинальный JSON для компонента "Мой день"
                         const segmentsStr = lead.segments ? JSON.stringify(lead.segments) : null;
                         
-                        // Надежное извлечение ID базы
                         let baseId = null;
                         let extractedBaseName = null;
                         
@@ -1055,44 +1053,62 @@ const autoSyncUsers = async () => {
         });
         const data = await response.json();
         
-        if (!data.ok || !data.users) return;
-
-        const transliterate = (text: string) => {
-            const ru = 'А-а-Б-б-В-в-Г-г-Д-д-Е-е-Ё-ё-Ж-ж-З-з-И-и-Й-й-К-к-Л-л-М-м-Н-н-О-о-П-п-Р-р-С-с-Т-т-У-у-Ф-ф-Х-х-Ц-ц-Ч-ч-Ш-ш-Щ-щ-Ъ-ъ-Ы-ы-Ь-ь-Э-э-Ю-ю-Я-я'.split('-');
-            const en = 'A-a-B-b-V-v-G-g-D-d-E-e-E-e-Zh-zh-Z-z-I-i-Y-y-K-k-L-l-M-m-N-n-O-o-P-p-R-r-S-s-T-t-U-u-F-f-Kh-kh-Ts-ts-Ch-ch-Sh-sh-Sch-sch---Y-y---E-e-Yu-yu-Ya-ya'.split('-');
-            let res = '';
-            for(let i = 0; i < text.length; i++) {
-                let s = text.charAt(i), n = ru.indexOf(s);
-                res += (n >= 0) ? en[n] : s;
-            }
-            return res.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.').replace(/(^\.|\.$)/g, '');
-        };
-
         const defaultPassword = await bcrypt.hash('crm12345', 10);
-        let added = 0;
-
         const checkBitrixId = db.prepare('SELECT id FROM users WHERE bitrix_id = ?');
         const checkLogin = db.prepare('SELECT id FROM users WHERE login = ?');
         const insertUser = db.prepare('INSERT INTO users (bitrix_id, login, password_hash, role) VALUES (?, ?, ?, ?)');
 
-        db.transaction((usersList) => {
-            for (const u of usersList) {
-                if (!u.id || !u.name || !u.active) continue; 
-                if (checkBitrixId.get(u.id)) continue;
+        let added = 0;
 
-                let login = transliterate(u.name);
-                
-                if (checkLogin.get(login)) {
-                    login = `${login}.${u.id}`;
+        if (data.ok && data.users) {
+            const transliterate = (text: string) => {
+                const ru = 'А-а-Б-б-В-в-Г-г-Д-д-Е-е-Ё-ё-Ж-ж-З-з-И-и-Й-й-К-к-Л-л-М-м-Н-н-О-о-П-п-Р-р-С-с-Т-т-У-у-Ф-ф-Х-х-Ц-ц-Ч-ч-Ш-ш-Щ-щ-Ъ-ъ-Ы-ы-Ь-ь-Э-э-Ю-ю-Я-я'.split('-');
+                const en = 'A-a-B-b-V-v-G-g-D-d-E-e-E-e-Zh-zh-Z-z-I-i-Y-y-K-k-L-l-M-m-N-n-O-o-P-p-R-r-S-s-T-t-U-u-F-f-Kh-kh-Ts-ts-Ch-ch-Sh-sh-Sch-sch---Y-y---E-e-Yu-yu-Ya-ya'.split('-');
+                let res = '';
+                for(let i = 0; i < text.length; i++) {
+                    let s = text.charAt(i), n = ru.indexOf(s);
+                    res += (n >= 0) ? en[n] : s;
                 }
+                return res.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.').replace(/(^\.|\.$)/g, '');
+            };
 
-                insertUser.run(u.id, login, defaultPassword, 'MANAGER');
-                added++;
-            }
-        })(data.users);
+            db.transaction((usersList) => {
+                for (const u of usersList) {
+                    if (!u.id) continue; 
+                    if (checkBitrixId.get(u.id)) continue;
 
-        if (added > 0) {
-            console.log(`✅ Автоматически создано аккаунтов менеджеров: ${added} (Пароль по умолчанию: crm12345)`);
+                    // Если имя пустое или состоит из спецсимволов — даем заглушку
+                    let baseName = u.name ? transliterate(u.name) : '';
+                    if (!baseName || baseName.length === 0) {
+                        baseName = `user_${u.id}`;
+                    }
+                    
+                    let login = baseName;
+                    if (checkLogin.get(login)) {
+                        login = `${login}.${u.id}`;
+                    }
+
+                    insertUser.run(u.id, login, defaultPassword, 'MANAGER');
+                    added++;
+                }
+            })(data.users);
+        }
+
+        const info = db.prepare(`
+            INSERT INTO users (bitrix_id, login, password_hash, role)
+            SELECT DISTINCT manager_id, 'system_bot_' || manager_id, ?, 'MANAGER'
+            FROM (
+                SELECT manager_id FROM leads WHERE manager_id IS NOT NULL
+                UNION
+                SELECT manager_id FROM deals WHERE manager_id IS NOT NULL
+                UNION
+                SELECT manager_id FROM calls WHERE manager_id IS NOT NULL
+            )
+            WHERE manager_id NOT IN (SELECT bitrix_id FROM users WHERE bitrix_id IS NOT NULL)
+        `).run(defaultPassword);
+
+        if (added > 0 || info.changes > 0) {
+            console.log(`✅ Обновлена база сотрудников! Из API добавлено: ${added}, Восстановлено системных/удаленных: ${info.changes}`);
         }
     } catch (error) {
         console.error('❌ Ошибка авто-синхронизации пользователей:', error);

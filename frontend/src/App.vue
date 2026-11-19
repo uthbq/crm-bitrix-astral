@@ -215,20 +215,20 @@ const logout = () => {
           <button @click="createUser" class="btn-success w-full">Сохранить в базу</button>
         </div>
 
-        <div v-if="activeTab === 'plans' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent">
+        <div v-if="activeTab === 'plans' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent centered-content">
           <PlansManager />
         </div>
 
-        <div v-if="activeTab === 'dictionaries' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent">
+        <div v-if="activeTab === 'dictionaries' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent centered-content">
           <DictionariesManager />
         </div>
 
-        <div v-if="activeTab === 'dashboard'" class="card w-full">
+        <div v-if="activeTab === 'dashboard'" class="card w-full centered-content">
           <ManagerDashboard v-if="userRole === 'MANAGER'" :managerId="currentManagerId" />
           <DirectorDashboard v-else />
         </div>
 
-        <div v-if="activeTab === 'ratings'" class="w-full bg-transparent">
+        <div v-if="activeTab === 'ratings'" class="w-full bg-transparent centered-content">
           <RatingsBoard />
         </div>
       </div>
@@ -304,7 +304,10 @@ html, body {
 .card-title { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #f5f6fa; padding-bottom: 15px; }
 .login-card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 350px; }
 .login-title { text-align: center; margin-top: 0; color: #2c3e50; }
-.add-user-card { width: 100%; max-width: 500px; }
+
+/* Центрирование карточки добавления пользователя */
+.add-user-card { width: 100%; max-width: 500px; margin: 0 auto; }
+.centered-content { max-width: 1400px; margin: 0 auto; }
 
 .form-label { display: block; margin-bottom: 5px; color: #7f8c8d; font-size: 14px; }
 .form-row { display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }

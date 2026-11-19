@@ -39,7 +39,7 @@
           </div>
         </div>
 
-        <div style="margin-top: 20px; display: flex; align-items: center; gap: 15px;">
+        <div style="margin-top: 20px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
           <button class="btn-save" @click="savePlan">Сохранить план</button>
           <span v-if="saveMessage" class="save-msg">{{ saveMessage }}</span>
         </div>
@@ -122,12 +122,14 @@ onMounted(loadUsers);
 <style scoped>
 .plans-manager { width: 100%; font-family: Arial, sans-serif; }
 .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.02); border: 1px solid #eee; margin-top: 20px; }
-.form-row { display: flex; gap: 20px; margin-bottom: 20px; }
-.form-group { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+
+.form-row { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+.form-group { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 250px; }
+
 .form-group label { color: #34495e; font-weight: bold; font-size: 14px; }
-.form-group input, .form-group select { padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; outline: none; font-size: 15px; }
+.form-group input, .form-group select { padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; outline: none; font-size: 15px; width: 100%; box-sizing: border-box; }
 .form-group small { color: #7f8c8d; font-size: 12px; }
-.btn-save { background: #3498db; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; transition: background 0.2s; }
+.btn-save { background: #3498db; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; transition: background 0.2s; white-space: nowrap; }
 .btn-save:hover { background: #2980b9; }
 .save-msg { color: #27ae60; font-weight: bold; }
 .empty-state { text-align: center; color: #7f8c8d; padding: 30px; background: #f9f9f9; border-radius: 6px; border: 1px dashed #ccc; }

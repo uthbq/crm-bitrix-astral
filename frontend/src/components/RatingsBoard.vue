@@ -17,7 +17,7 @@
         <ul class="ranking-list">
           <li v-for="(m, i) in topCalls" :key="m.manager_id" :class="'rank-' + i">
             <span class="medal">{{ getMedal(i) }}</span>
-            <span class="name">{{ m.manager_name }}</span>
+            <span class="name" :title="m.manager_name">{{ m.manager_name }}</span>
             <span class="score">{{ m.total_calls }} шт</span>
           </li>
           <li v-if="topCalls.length === 0" class="empty">Нет звонков</li>
@@ -32,7 +32,7 @@
         <ul class="ranking-list">
           <li v-for="(m, i) in topLeads" :key="m.manager_id" :class="'rank-' + i">
             <span class="medal">{{ getMedal(i) }}</span>
-            <span class="name">{{ m.manager_name }}</span>
+            <span class="name" :title="m.manager_name">{{ m.manager_name }}</span>
             <span class="score">{{ m.quality_leads }} шт</span>
           </li>
           <li v-if="topLeads.length === 0" class="empty">Нет качественных лидов</li>
@@ -47,7 +47,7 @@
         <ul class="ranking-list">
           <li v-for="(m, i) in topDeals" :key="m.manager_id" :class="'rank-' + i">
             <span class="medal">{{ getMedal(i) }}</span>
-            <span class="name">{{ m.manager_name }}</span>
+            <span class="name" :title="m.manager_name">{{ m.manager_name }}</span>
             <span class="score money">{{ m.amount_sum.toLocaleString('ru-RU') }} ₽</span>
           </li>
           <li v-if="topDeals.length === 0" class="empty">Нет оплат</li>
@@ -62,7 +62,7 @@
         <ul class="ranking-list">
           <li v-for="(m, i) in topConversion" :key="m.manager_id" :class="'rank-' + i">
             <span class="medal">{{ getMedal(i) }}</span>
-            <span class="name">{{ m.manager_name }}</span>
+            <span class="name" :title="m.manager_name">{{ m.manager_name }}</span>
             <span class="score conversion">
               {{ m.conv }}% <small style="color: #95a5a6; font-size: 11px;">({{ m.quality_leads }}/{{ m.unique_leads }})</small>
             </span>
@@ -106,9 +106,9 @@ const getMedal = (index: number) => {
   return `${index + 1}.`;
 };
 
-const topCalls = computed(() => [...managers.value].filter(m => m.total_calls > 0).sort((a, b) => b.total_calls - a.total_calls).slice(0, 3));
-const topLeads = computed(() => [...managers.value].filter(m => m.quality_leads > 0).sort((a, b) => b.quality_leads - a.quality_leads).slice(0, 3));
-const topDeals = computed(() => [...managers.value].filter(m => m.amount_sum > 0).sort((a, b) => b.amount_sum - a.amount_sum).slice(0, 3));
+const topCalls = computed(() => [...managers.value].filter(m => m.total_calls > 0).sort((a, b) => b.total_calls - a.total_calls).slice(0, 15));
+const topLeads = computed(() => [...managers.value].filter(m => m.quality_leads > 0).sort((a, b) => b.quality_leads - a.quality_leads).slice(0, 15));
+const topDeals = computed(() => [...managers.value].filter(m => m.amount_sum > 0).sort((a, b) => b.amount_sum - a.amount_sum).slice(0, 15));
 
 const topConversion = computed(() => {
   return [...managers.value]
@@ -117,8 +117,11 @@ const topConversion = computed(() => {
       conv: m.unique_leads > 0 ? Math.round((m.quality_leads / m.unique_leads) * 100) : 0 
     }))
     .filter(m => m.conv > 0 && m.unique_leads >= 5) 
-    .sort((a, b) => b.conv - a.conv)
-    .slice(0, 3);
+    .sort((a, b) => {
+        if (b.conv !== a.conv) return b.conv - a.conv;
+        return b.total_calls - a.total_calls; 
+    })
+    .slice(0, 15);
 });
 </script>
 
@@ -140,9 +143,9 @@ const topConversion = computed(() => {
 .rank-1 { background: linear-gradient(90deg, rgba(192,192,192,0.1) 0%, white 50%) !important; border-left: 3px solid #bdc3c7; }
 .rank-2 { background: linear-gradient(90deg, rgba(205,127,50,0.1) 0%, white 50%) !important; border-left: 3px solid #d35400; }
 
-.medal { font-size: 24px; width: 35px; text-align: center; margin-right: 15px; }
-.name { flex: 1; font-weight: bold; color: #2c3e50; font-size: 15px; }
-.score { font-weight: bold; color: #34495e; font-size: 16px; }
+.medal { font-size: 24px; width: 35px; text-align: center; margin-right: 15px; flex-shrink: 0; }
+.name { flex: 1; font-weight: bold; color: #2c3e50; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 15px; cursor: default; }
+.score { font-weight: bold; color: #34495e; font-size: 16px; flex-shrink: 0; white-space: nowrap; }
 .money { color: #27ae60; }
 .conversion { color: #e67e22; }
 .empty { padding: 20px; text-align: center; color: #95a5a6; font-size: 13px; display: block !important; }

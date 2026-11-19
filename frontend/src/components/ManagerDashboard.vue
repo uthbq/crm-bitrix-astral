@@ -57,7 +57,6 @@
             <div class="conv-formula">Разговоры ({{ aggregatedStats.conversations }}) / Наборы ({{ aggregatedStats.calls }})</div>
           </div>
 
-          <!-- КАРТОЧКА ПРАВИЛА (С ПРОВЕРКОЙ НА НУЛЬ) -->
           <div class="conv-card" v-for="rule in conversionRules" :key="rule.id">
             <div class="conv-title">База "{{ rule.base_name }}"</div>
             
@@ -112,7 +111,7 @@
         </div>
 
         <div class="card" style="flex: 1.5; border-left: 4px solid #f39c12;">
-          <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+          <div style="display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap;">
             <button @click="activeListTab = 'retries'" :class="['tab-btn', { active: activeListTab === 'retries' }]">Недозвоны ({{ workLists.retries?.length || 0 }})</button>
             <button @click="activeListTab = 'returns'" :class="['tab-btn', { active: activeListTab === 'returns' }]">Догрев / Кросс ({{ workLists.returns?.length || 0 }})</button>
             <button @click="activeListTab = 'new'" :class="['tab-btn', { active: activeListTab === 'new' }]">Свежие в работе ({{ workLists.new_in_work?.length || 0 }})</button>
@@ -147,32 +146,34 @@
       </div>
       
       <div v-else>
-        <table class="stats-table">
-          <thead>
-            <tr>
-              <th>Дата</th>
-              <th>Исходящие наборы</th>
-              <th>Разговоры (> {{ managerInfo.threshold }} сек)</th>
-              <th>Взято лидов</th>
-              <th>Кач. Лиды</th>
-              <th>Передано</th>
-              <th>Оплаты</th>
-              <th>Сумма (₽)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="day in stats" :key="day.date">
-              <td>{{ formatDate(day.date) }}</td>
-              <td>{{ day.total_outbound }}</td>
-              <td><strong>{{ day.valid_conversations }}</strong></td>
-              <td>{{ day.unique_leads }}</td>
-              <td style="color: #27ae60; font-weight: bold;">{{ day.quality_leads }}</td>
-              <td style="color: #8e44ad; font-weight: bold;">{{ day.transfers }}</td>
-              <td>{{ day.paid_deals }}</td>
-              <td><strong>{{ day.amount_sum.toLocaleString('ru-RU') }}</strong></td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-responsive">
+          <table class="stats-table">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Исходящие наборы</th>
+                <th>Разговоры (> {{ managerInfo.threshold }} сек)</th>
+                <th>Взято лидов</th>
+                <th>Кач. Лиды</th>
+                <th>Передано</th>
+                <th>Оплаты</th>
+                <th>Сумма (₽)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="day in stats" :key="day.date">
+                <td>{{ formatDate(day.date) }}</td>
+                <td>{{ day.total_outbound }}</td>
+                <td><strong>{{ day.valid_conversations }}</strong></td>
+                <td>{{ day.unique_leads }}</td>
+                <td style="color: #27ae60; font-weight: bold;">{{ day.quality_leads }}</td>
+                <td style="color: #8e44ad; font-weight: bold;">{{ day.transfers }}</td>
+                <td>{{ day.paid_deals }}</td>
+                <td><strong>{{ day.amount_sum.toLocaleString('ru-RU') }}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -302,7 +303,7 @@ const aggregatedBaseStats = computed(() => {
       unique_leads: aggregatedStats.value.unique,
       total_calls: aggregatedStats.value.calls,
       valid_conversations: aggregatedStats.value.conversations,
-      paid_deals: stats.value.reduce((acc, s) => acc + (s.paid_deals || 0), 0) // Учитываем сделки
+      paid_deals: stats.value.reduce((acc, s) => acc + (s.paid_deals || 0), 0)
     };
   });
   return aggs;
@@ -330,7 +331,7 @@ const weakSpots = computed(() => {
 .dashboard { font-family: Arial, sans-serif; width: 100%; }
 
 .filter-select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; outline: none; background: white; color: #2c3e50; cursor: pointer; }
-.filters { display: flex; gap: 15px; align-items: center; }
+.filters { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
 
 .tab-btn { background: #ecf0f1; border: none; padding: 8px 15px; border-radius: 6px; cursor: pointer; color: #7f8c8d; font-size: 13px; font-weight: bold; transition: 0.2s; }
 .tab-btn.active { background: #3498db; color: white; }
@@ -367,12 +368,14 @@ h3 { width: 100%; margin-top: 0; margin-bottom: 15px; color: #2c3e50; font-size:
 .text-danger { color: #e74c3c; }
 .text-warning { color: #f39c12; }
 
-.scrollable-table { max-height: 250px; overflow-y: auto; }
-.data-table { width: 100%; border-collapse: collapse; }
-.data-table th, .data-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; text-align: left; font-size: 13px; }
-.data-table th { background: #f5f6fa; color: #7f8c8d; font-weight: normal; position: sticky; top: 0; }
+.table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.scrollable-table { max-height: 250px; overflow-y: auto; overflow-x: auto; width: 100%; }
 
-.stats-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-.stats-table th, .stats-table td { border: 1px solid #ddd; padding: 12px; text-align: left; color: #2c3e50; }
+.data-table { width: 100%; border-collapse: collapse; min-width: 400px; }
+.data-table th, .data-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; text-align: left; font-size: 13px; white-space: nowrap; }
+.data-table th { background: #f5f6fa; color: #7f8c8d; font-weight: normal; position: sticky; top: 0; z-index: 2; }
+
+.stats-table { width: 100%; border-collapse: collapse; margin-top: 15px; min-width: 800px; }
+.stats-table th, .stats-table td { border: 1px solid #ddd; padding: 12px; text-align: left; color: #2c3e50; white-space: nowrap; }
 .stats-table th { background-color: #f5f6fa; font-weight: bold; }
 </style>

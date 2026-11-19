@@ -11,10 +11,27 @@
           <option value="month">За последние 30 дней</option>
         </select>
 
-        <select v-model="filters.base_id" @change="loadAnalytics" class="filter-select">
-          <option value="">Все базы</option>
-          <option v-for="b in basesList" :key="b.id" :value="b.id">{{ b.name }}</option>
-        </select>
+        <div class="autocomplete-wrapper" style="margin-bottom: 0;">
+          <input 
+            v-model="searchBaseQuery" 
+            @focus="showBaseDropdown = true" 
+            @blur="setTimeout(() => showBaseDropdown = false, 200)"
+            @input="handleBaseInput"
+            placeholder="Поиск по базам..." 
+            class="filter-select"
+            style="min-width: 220px;"
+          />
+          <div v-if="showBaseDropdown && filteredBasesList.length" class="dropdown-list">
+            <div 
+              v-for="b in filteredBasesList" 
+              :key="b.id" 
+              @click="selectBaseFilter(b)" 
+              class="dropdown-item"
+            >
+              {{ b.name }}
+            </div>
+          </div>
+        </div>
         
         <select v-model="filters.manager_id" @change="loadAnalytics" class="filter-select">
           <option value="">Все менеджеры</option>
@@ -94,18 +111,20 @@
       <div class="split-card-row" style="margin-top: -10px;">
         <div class="card" style="flex: 1; border-left: 4px solid #3498db;">
           <h3>💎 Кач. лиды по продуктам</h3>
-          <table class="data-table">
-            <thead>
-              <tr><th>Продукт</th><th style="text-align: right;">Кач. лидов</th></tr>
-            </thead>
-            <tbody>
-              <tr v-if="productsStats.length === 0"><td colspan="2" class="empty">Нет качественных лидов</td></tr>
-              <tr v-for="p in productsStats" :key="p.product_name">
-                <td>{{ p.product_name }}</td>
-                <td style="text-align: right; font-weight: bold; color: #3498db;">{{ p.quality_leads }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr><th>Продукт</th><th style="text-align: right;">Кач. лидов</th></tr>
+              </thead>
+              <tbody>
+                <tr v-if="productsStats.length === 0"><td colspan="2" class="empty">Нет качественных лидов</td></tr>
+                <tr v-for="p in productsStats" :key="p.product_name">
+                  <td>{{ p.product_name }}</td>
+                  <td style="text-align: right; font-weight: bold; color: #3498db;">{{ p.quality_leads }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div class="card" style="flex: 1; border-left: 4px solid #f39c12;">
@@ -134,142 +153,150 @@
       <div class="split-card-row">
         <div class="card" style="flex: 2; border-left: 4px solid #e74c3c;">
           <h3>🛑 Топ причин отказов <span style="font-size: 12px; color: #7f8c8d; font-weight: normal;">(Нажмите для деталей)</span></h3>
-          <table class="data-table interactive-table">
-            <thead>
-              <tr>
-                <th>Причина</th>
-                <th style="width: 120px; text-align: center;">Лидов</th>
-                <th style="width: 120px; text-align: center;">Доля (%)</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="refusals.length === 0"><td colspan="3" class="empty">Нет отказов за этот период</td></tr>
-              <tr v-for="(r, index) in refusals" :key="index" @click="openReasonDetails(r)">
-                <td><strong>{{ r.reason_name }}</strong></td>
-                <td style="text-align: center; color: #e74c3c; font-weight: bold;">
-                  {{ r.count }}
-                  <span v-html="renderTrendHTML(r.count, getPrevValue(refusalsPrev, 'id', r.id, 'count'))"></span>
-                </td>
-                <td style="text-align: center; color: #7f8c8d;">{{ getRefusalPercentage(r.count) }}%</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-responsive">
+            <table class="data-table interactive-table">
+              <thead>
+                <tr>
+                  <th>Причина</th>
+                  <th style="width: 120px; text-align: center;">Лидов</th>
+                  <th style="width: 120px; text-align: center;">Доля (%)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="refusals.length === 0"><td colspan="3" class="empty">Нет отказов за этот период</td></tr>
+                <tr v-for="(r, index) in refusals" :key="index" @click="openReasonDetails(r)">
+                  <td><strong>{{ r.reason_name }}</strong></td>
+                  <td style="text-align: center; color: #e74c3c; font-weight: bold;">
+                    {{ r.count }}
+                    <span v-html="renderTrendHTML(r.count, getPrevValue(refusalsPrev, 'id', r.id, 'count'))"></span>
+                  </td>
+                  <td style="text-align: center; color: #7f8c8d;">{{ getRefusalPercentage(r.count) }}%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div class="card" style="flex: 1; border-left: 4px solid #95a5a6;">
-          <h3>🤐 Топ "Молчунов"</h3>
+          <h3>Топ "Молчунов"</h3>
           <p style="font-size: 12px; color: #7f8c8d; margin-top: -10px; margin-bottom: 10px;">Слили лид, не указав причину</p>
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Менеджер</th>
-                <th style="text-align: center;">Кол-во</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="silentManagers.length === 0"><td colspan="2" class="empty">Молчунов нет 🎉</td></tr>
-              <tr v-for="sm in silentManagers" :key="sm.manager_id">
-                <td>{{ sm.manager_name }}</td>
-                <td style="text-align: center; font-weight: bold; color: #e74c3c;">{{ sm.silent_count }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Менеджер</th>
+                  <th style="text-align: center;">Кол-во</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="silentManagers.length === 0"><td colspan="2" class="empty">Молчунов нет 🎉</td></tr>
+                <tr v-for="sm in silentManagers" :key="sm.manager_id">
+                  <td>{{ sm.manager_name }}</td>
+                  <td style="text-align: center; font-weight: bold; color: #e74c3c;">{{ sm.silent_count }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
       
       <div class="card">
         <h3>🏆 Рейтинг менеджеров (Топ по выручке) <span style="font-size: 12px; font-weight: normal; color: #95a5a6; margin-left: 10px;">*нажмите на подчеркнутые цифры для деталей</span></h3>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Сотрудник</th>
-              <th>Звонки</th>
-              <th>Разговоры</th>
-              <th>Кач. Лиды</th>
-              <th>Передано</th>
-              <th>Оплаты</th>
-              <th>Сумма (₽)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="managers.length === 0"><td colspan="7" class="empty">Нет данных за этот период</td></tr>
-            <tr v-for="(m, index) in managers" :key="m.manager_id">
-              <td>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span v-if="index === 0" style="font-size: 16px;">🥇</span>
-                  <span v-else-if="index === 1" style="font-size: 16px;">🥈</span>
-                  <span v-else-if="index === 2" style="font-size: 16px;">🥉</span>
-                  <span v-else style="width: 16px;"></span>
-                  <strong>{{ m.manager_name }}</strong>
-                </div>
-              </td>
-              <td>
-                {{ m.total_calls }}
-                <span v-html="renderTrendHTML(m.total_calls, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'total_calls'))"></span>
-              </td>
-              <td>{{ m.valid_conversations }}</td>
-              <td>
-                <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'quality_leads', `Кач. лиды: ${m.manager_name}`)">
-                  {{ m.quality_leads }}
-                </span>
-                <span v-html="renderTrendHTML(m.quality_leads, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'quality_leads'))"></span>
-              </td>
-              <td style="color: #8e44ad; font-weight: bold;">{{ m.transfers }}</td>
-              <td>
-                <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'paid_deals', `Сделки: ${m.manager_name}`)">
-                  {{ m.paid_deals }}
-                </span>
-              </td>
-              <td class="money">
-                <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'paid_deals', `Выручка: ${m.manager_name}`)">
-                  {{ m.amount_sum.toLocaleString('ru-RU') }} ₽
-                </span>
-                <span v-html="renderTrendHTML(m.amount_sum, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'amount_sum'))"></span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Сотрудник</th>
+                <th>Звонки</th>
+                <th>Разговоры</th>
+                <th>Кач. Лиды</th>
+                <th>Передано</th>
+                <th>Оплаты</th>
+                <th>Сумма (₽)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="managers.length === 0"><td colspan="7" class="empty">Нет данных за этот период</td></tr>
+              <tr v-for="(m, index) in managers" :key="m.manager_id">
+                <td>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span v-if="index === 0" style="font-size: 16px;">🥇</span>
+                    <span v-else-if="index === 1" style="font-size: 16px;">🥈</span>
+                    <span v-else-if="index === 2" style="font-size: 16px;">🥉</span>
+                    <span v-else style="width: 16px;"></span>
+                    <strong>{{ m.manager_name }}</strong>
+                  </div>
+                </td>
+                <td>
+                  {{ m.total_calls }}
+                  <span v-html="renderTrendHTML(m.total_calls, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'total_calls'))"></span>
+                </td>
+                <td>{{ m.valid_conversations }}</td>
+                <td>
+                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'quality_leads', `Кач. лиды: ${m.manager_name}`)">
+                    {{ m.quality_leads }}
+                  </span>
+                  <span v-html="renderTrendHTML(m.quality_leads, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'quality_leads'))"></span>
+                </td>
+                <td style="color: #8e44ad; font-weight: bold;">{{ m.transfers }}</td>
+                <td>
+                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'paid_deals', `Сделки: ${m.manager_name}`)">
+                    {{ m.paid_deals }}
+                  </span>
+                </td>
+                <td class="money">
+                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'paid_deals', `Выручка: ${m.manager_name}`)">
+                    {{ m.amount_sum.toLocaleString('ru-RU') }} ₽
+                  </span>
+                  <span v-html="renderTrendHTML(m.amount_sum, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'amount_sum'))"></span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div class="card">
         <h3>📁 Эффективность баз</h3>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>База</th>
-              <th>Кач. Лиды</th>
-              <th>Оплаты (шт)</th>
-              <th>Осн. продукт (₽)</th>
-              <th>Кросс-продажи (₽)</th>
-              <th>Итого (₽)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="bases.length === 0"><td colspan="6" class="empty">Нет данных за этот период</td></tr>
-            <tr v-for="b in bases" :key="b.base_id">
-              <td><strong>{{ b.base_name }}</strong></td>
-              <td>
-                <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'quality_leads', `Кач. лиды базы: ${b.base_name}`)">
-                  {{ b.quality_leads }}
-                </span>
-                <span v-html="renderTrendHTML(b.quality_leads, getPrevValue(basesPrev, 'base_id', b.base_id, 'quality_leads'))"></span>
-              </td>
-              <td>
-                <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'paid_deals', `Сделки базы: ${b.base_name}`)">
-                  {{ b.paid_deals }}
-                </span>
-              </td>
-              <td class="money" style="color: #2980b9;">{{ b.main_amount.toLocaleString('ru-RU') }}</td>
-              <td style="color: #f39c12; font-weight: bold;">{{ b.cross_amount.toLocaleString('ru-RU') }}</td>
-              <td class="money">
-                <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'paid_deals', `Выручка базы: ${b.base_name}`)">
-                  {{ b.amount_sum.toLocaleString('ru-RU') }}
-                </span>
-                <span v-html="renderTrendHTML(b.amount_sum, getPrevValue(basesPrev, 'base_id', b.base_id, 'amount_sum'))"></span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>База</th>
+                <th>Кач. Лиды</th>
+                <th>Оплаты (шт)</th>
+                <th>Осн. продукт (₽)</th>
+                <th>Кросс-продажи (₽)</th>
+                <th>Итого (₽)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="bases.length === 0"><td colspan="6" class="empty">Нет данных за этот период</td></tr>
+              <tr v-for="b in bases" :key="b.base_id">
+                <td><strong>{{ b.base_name }}</strong></td>
+                <td>
+                  <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'quality_leads', `Кач. лиды базы: ${b.base_name}`)">
+                    {{ b.quality_leads }}
+                  </span>
+                  <span v-html="renderTrendHTML(b.quality_leads, getPrevValue(basesPrev, 'base_id', b.base_id, 'quality_leads'))"></span>
+                </td>
+                <td>
+                  <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'paid_deals', `Сделки базы: ${b.base_name}`)">
+                    {{ b.paid_deals }}
+                  </span>
+                </td>
+                <td class="money" style="color: #2980b9;">{{ b.main_amount.toLocaleString('ru-RU') }}</td>
+                <td style="color: #f39c12; font-weight: bold;">{{ b.cross_amount.toLocaleString('ru-RU') }}</td>
+                <td class="money">
+                  <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'paid_deals', `Выручка базы: ${b.base_name}`)">
+                    {{ b.amount_sum.toLocaleString('ru-RU') }}
+                  </span>
+                  <span v-html="renderTrendHTML(b.amount_sum, getPrevValue(basesPrev, 'base_id', b.base_id, 'amount_sum'))"></span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
     </div>
@@ -282,33 +309,35 @@
         </div>
         <div class="modal-body">
           <div v-if="drilldownLoading" style="text-align: center; color: #7f8c8d; padding: 20px;">Поиск в локальной БД...</div>
-          <table v-else class="data-table">
-            <thead>
-              <tr>
-                <th>Сущность (ID)</th>
-                <th>Дата</th>
-                <th>Менеджер</th>
-                <th>База</th>
-                <th style="text-align: right;">Сумма</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="drilldownData.length === 0"><td colspan="5" class="empty">Связанные карточки не найдены</td></tr>
-              <tr v-for="item in drilldownData" :key="item.b24_id">
-                <td>
-                  <span class="b24-id-badge">
-                    {{ item.type === 'deal' ? 'Сделка' : 'Лид' }} #{{ item.b24_id }}
-                  </span>
-                </td>
-                <td>{{ formatDateTime(item.created_at) }}</td>
-                <td>{{ item.manager_name }}</td>
-                <td>{{ item.base_name || '—' }}</td>
-                <td style="text-align: right; font-weight: bold; color: #27ae60;">
-                  {{ item.amount ? item.amount.toLocaleString('ru-RU') + ' ₽' : '—' }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div v-else class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Сущность (ID)</th>
+                  <th>Дата</th>
+                  <th>Менеджер</th>
+                  <th>База</th>
+                  <th style="text-align: right;">Сумма</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="drilldownData.length === 0"><td colspan="5" class="empty">Связанные карточки не найдены</td></tr>
+                <tr v-for="item in drilldownData" :key="item.b24_id">
+                  <td>
+                    <span class="b24-id-badge">
+                      {{ item.type === 'deal' ? 'Сделка' : 'Лид' }} #{{ item.b24_id }}
+                    </span>
+                  </td>
+                  <td>{{ formatDateTime(item.created_at) }}</td>
+                  <td>{{ item.manager_name }}</td>
+                  <td>{{ item.base_name || '—' }}</td>
+                  <td style="text-align: right; font-weight: bold; color: #27ae60;">
+                    {{ item.amount ? item.amount.toLocaleString('ru-RU') + ' ₽' : '—' }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -356,29 +385,31 @@
         </div>
         <div class="modal-body">
           <div v-if="modalLoading" style="text-align: center; color: #7f8c8d; padding: 20px;">Загрузка лидов...</div>
-          <table v-else class="data-table">
-            <thead>
-              <tr>
-                <th>Дата создания</th>
-                <th>Менеджер</th>
-                <th>Сегмент (База)</th>
-                <th style="text-align: right;">ID в базе</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="detailedLeads.length === 0"><td colspan="4" class="empty">Лиды не найдены</td></tr>
-              <tr v-for="lead in detailedLeads" :key="lead.bitrix_lead_id">
-                <td>{{ formatDateTime(lead.created_at) }}</td>
-                <td>{{ lead.manager_name }}</td>
-                <td>{{ lead.base_name || 'Не указана' }}</td>
-                <td style="text-align: right;">
-                  <span class="b24-id-badge">
-                    ID: {{ lead.bitrix_lead_id }}
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div v-else class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Дата создания</th>
+                  <th>Менеджер</th>
+                  <th>Сегмент (База)</th>
+                  <th style="text-align: right;">ID в базе</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="detailedLeads.length === 0"><td colspan="4" class="empty">Лиды не найдены</td></tr>
+                <tr v-for="lead in detailedLeads" :key="lead.bitrix_lead_id">
+                  <td>{{ formatDateTime(lead.created_at) }}</td>
+                  <td>{{ lead.manager_name }}</td>
+                  <td>{{ lead.base_name || 'Не указана' }}</td>
+                  <td style="text-align: right;">
+                    <span class="b24-id-badge">
+                      ID: {{ lead.bitrix_lead_id }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -412,7 +443,10 @@ const basesList = ref<any[]>([]);
 const managersList = ref<any[]>([]);
 const loading = ref(true);
 
-const filters = reactive({ period: 'today', base_id: '', manager_id: '' });
+const filters = reactive({ period: 'week', base_id: '', manager_id: '' });
+
+const searchBaseQuery = ref('');
+const showBaseDropdown = ref(false);
 
 const kpiCurrent = reactive({ calls: 0, leads: 0, deals: 0, revenue: 0 });
 const kpiPrev = reactive({ calls: 0, leads: 0, deals: 0, revenue: 0 });
@@ -429,6 +463,26 @@ const drilldownData = ref<any[]>([]);
 
 const showIssuesModal = ref(false);
 const dataIssues = ref({ total: 0, details: {} as any });
+
+const filteredBasesList = computed(() => {
+  if (!searchBaseQuery.value) return basesList.value;
+  const q = searchBaseQuery.value.toLowerCase();
+  return basesList.value.filter(b => b.name.toLowerCase().includes(q));
+});
+
+const selectBaseFilter = (base: any) => {
+  filters.base_id = base.id;
+  searchBaseQuery.value = base.name;
+  showBaseDropdown.value = false;
+  loadAnalytics();
+};
+
+const handleBaseInput = () => {
+  if (searchBaseQuery.value === '') {
+    filters.base_id = '';
+    loadAnalytics();
+  }
+};
 
 const totalRefusalsCount = computed(() => refusals.value.reduce((sum, r) => sum + r.count, 0));
 const getRefusalPercentage = (count: number) => totalRefusalsCount.value === 0 ? 0 : Math.round((count / totalRefusalsCount.value) * 100);
@@ -715,10 +769,11 @@ onMounted(() => {
 .btn-export:hover:not(:disabled) { background: #2ecc71; }
 .btn-export:disabled { background: #95a5a6; cursor: not-allowed; }
 .dashboard-grid { display: flex; flex-direction: column; gap: 30px; }
-.card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.02); border: 1px solid #eee; overflow-x: auto; }
+.card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.02); border: 1px solid #eee; }
 .card h3 { margin-top: 0; color: #34495e; margin-bottom: 15px; }
 
-.data-table { width: 100%; border-collapse: collapse; }
+.table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.data-table { width: 100%; border-collapse: collapse; min-width: 600px; }
 .data-table th, .data-table td { padding: 12px; border-bottom: 1px solid #f0f0f0; text-align: left; font-size: 14px; white-space: nowrap; }
 .data-table th { background: #f5f6fa; color: #7f8c8d; font-weight: bold; }
 .empty { text-align: center; color: #7f8c8d; padding: 20px !important; }
@@ -735,4 +790,10 @@ onMounted(() => {
 .issue-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .b24-id-badge-small { background: #f5f6fa; color: #2c3e50; padding: 4px 8px; border-radius: 4px; font-size: 12px; border: 1px solid #ddd; display: inline-block; }
 .issue-desc { font-size: 13px; color: #7f8c8d; margin-bottom: 5px; margin-top: -10px;}
+
+.autocomplete-wrapper { position: relative; }
+.dropdown-list { position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #ddd; border-radius: 6px; max-height: 250px; overflow-y: auto; z-index: 1000; box-shadow: 0 8px 16px rgba(0,0,0,0.1); margin-top: 5px; }
+.dropdown-item { padding: 12px; cursor: pointer; border-bottom: 1px solid #f5f6fa; font-size: 14px; }
+.dropdown-item:last-child { border-bottom: none; }
+.dropdown-item:hover { background-color: #f0f4f8; }
 </style>
