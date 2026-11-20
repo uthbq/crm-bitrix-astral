@@ -5,6 +5,7 @@ import DictionariesManager from './components/DictionariesManager.vue';
 import DirectorDashboard from './components/DirectorDashboard.vue';
 import PlansManager from './components/PlansManager.vue';
 import RatingsBoard from './components/RatingsBoard.vue';
+import DepartmentsManager from './components/DepartmentsManager.vue';
 
 const token = ref('');
 const authError = ref('');
@@ -154,6 +155,7 @@ const logout = () => {
         <button @click="activeTab = 'dashboard'" :class="['nav-btn', { active: activeTab === 'dashboard' }]">📊 Дашборд</button>
         <button @click="activeTab = 'ratings'" :class="['nav-btn', { active: activeTab === 'ratings' }]">🏆 Доска почёта</button>
         <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'users'" :class="['nav-btn', { active: activeTab === 'users' }]">👥 Сотрудники</button>
+        <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'departments'" :class="['nav-btn', { active: activeTab === 'departments' }]">🏢 Отделы</button>
         <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'plans'" :class="['nav-btn', { active: activeTab === 'plans' }]">📅 Планы и Нормативы</button>
         <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'dictionaries'" :class="['nav-btn', { active: activeTab === 'dictionaries' }]">📁 Справочники</button>
       </nav>
@@ -213,6 +215,10 @@ const logout = () => {
             <option value="DIRECTOR">Директор</option>
           </select>
           <button @click="createUser" class="btn-success w-full">Сохранить в базу</button>
+        </div>
+
+        <div v-if="activeTab === 'departments' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent centered-content">
+          <DepartmentsManager />
         </div>
 
         <div v-if="activeTab === 'plans' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent centered-content">
@@ -305,7 +311,6 @@ html, body {
 .login-card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); width: 100%; max-width: 350px; }
 .login-title { text-align: center; margin-top: 0; color: #2c3e50; }
 
-/* Центрирование карточки добавления пользователя */
 .add-user-card { width: 100%; max-width: 500px; margin: 0 auto; }
 .centered-content { max-width: 1400px; margin: 0 auto; }
 

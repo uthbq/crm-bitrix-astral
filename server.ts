@@ -798,14 +798,93 @@ app.post('/api/plans', (req: any, res: any) => {
 app.get('/api/users', (req: any, res: any) => {
     try {
         const users = db.prepare(`
-            SELECT id, bitrix_id, login, role 
-            FROM users 
-            WHERE role IN ('MANAGER', 'HEAD_OF_DEPT')
+            SELECT 
+                u.id, 
+                u.bitrix_id, 
+                u.login, 
+                u.role,
+                u.department_id,
+                d.name as department_name
+            FROM users u
+            LEFT JOIN departments d ON u.department_id = d.id
+            WHERE u.role IN ('MANAGER', 'HEAD_OF_DEPT')
+            ORDER BY u.login ASC
         `).all();
         res.json(users);
     } catch (error) {
         console.error('Ошибка:', error);
         res.status(500).json({ error: 'Ошибка получения пользователей' });
+    }
+});
+
+app.get('/api/departments', (req: any, res: any) => {
+    try {
+        const departments = db.prepare(`
+            SELECT 
+                d.id, 
+                d.name,
+                COUNT(u.id) as members_count
+            FROM departments d
+            LEFT JOIN users u ON u.department_id = d.id
+            GROUP BY d.id
+            ORDER BY d.id ASC
+        `).all();
+        res.json(departments);
+    } catch (error) {
+        console.error('Ошибка загрузки отделов:', error);
+        res.status(500).json({ error: 'Ошибка загрузки отделов' });
+    }
+});
+
+app.post('/api/departments', (req: any, res: any) => {
+    try {
+        const { name } = req.body;
+        if (!name || !name.trim()) {
+            return res.status(400).json({ error: 'Название отдела обязательно' });
+        }
+        const info = db.prepare('INSERT INTO departments (name) VALUES (?)').run(name.trim());
+        res.json({ id: info.lastInsertRowid, name: name.trim(), message: 'Отдел создан' });
+    } catch (error) {
+        console.error('Ошибка создания отдела:', error);
+        res.status(500).json({ error: 'Ошибка создания отдела' });
+    }
+});
+
+app.delete('/api/departments/:id', (req: any, res: any) => {
+    try {
+        const deptId = req.params.id;
+        db.transaction(() => {
+            db.prepare('UPDATE users SET department_id = NULL WHERE department_id = ?').run(deptId);
+            db.prepare('DELETE FROM departments WHERE id = ?').run(deptId);
+        })();
+        res.json({ message: 'Отдел удален' });
+    } catch (error) {
+        console.error('Ошибка удаления отдела:', error);
+        res.status(500).json({ error: 'Ошибка удаления отдела' });
+    }
+});
+
+app.put('/api/departments/:id/members', (req: any, res: any) => {
+    try {
+        const deptId = Number(req.params.id);
+        const { userIds } = req.body; 
+
+        if (!Array.isArray(userIds)) {
+            return res.status(400).json({ error: 'Ожидается массив userIds' });
+        }
+
+        db.transaction(() => {
+            db.prepare('UPDATE users SET department_id = NULL WHERE department_id = ?').run(deptId);
+            const updateStmt = db.prepare('UPDATE users SET department_id = ? WHERE id = ?');
+            for (const uid of userIds) {
+                updateStmt.run(deptId, uid);
+            }
+        })();
+
+        res.json({ message: 'Состав отдела успешно обновлен' });
+    } catch (error) {
+        console.error('Ошибка обновления состава отдела:', error);
+        res.status(500).json({ error: 'Ошибка обновления состава отдела' });
     }
 });
 
@@ -1077,7 +1156,6 @@ const autoSyncUsers = async () => {
                     if (!u.id) continue; 
                     if (checkBitrixId.get(u.id)) continue;
 
-                    // Если имя пустое или состоит из спецсимволов — даем заглушку
                     let baseName = u.name ? transliterate(u.name) : '';
                     if (!baseName || baseName.length === 0) {
                         baseName = `user_${u.id}`;

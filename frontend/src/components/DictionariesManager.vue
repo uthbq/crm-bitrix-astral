@@ -306,4 +306,19 @@ onMounted(() => {
 .btn-save-rule { background: #9b59b6; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; font-size: 14px; transition: background 0.2s; height: 39px; white-space: nowrap; }
 .btn-save-rule:hover { background: #8e44ad; }
 
-.mandatory-exclusion { background: #fffcf5; border: 1px solid #f39c12; padding:
+.mandatory-exclusion { background: #fffcf5; border: 1px solid #f39c12; padding: 12px 15px; border-radius: 6px; font-size: 13px; color: #d35400; display: flex; align-items: center; gap: 10px; }
+.lock-icon { font-size: 16px; }
+
+.add-form { display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; }
+.add-form input, .add-form select { padding: 10px; border: 1px solid #ddd; border-radius: 6px; outline: none; flex: 1; min-width: 120px; font-size: 13px; background: white; color: #2c3e50; }
+
+.btn-add { background: #2ecc71; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; font-weight: bold; flex-shrink: 0; white-space: nowrap; }
+.btn-add:hover { background: #27ae60; }
+
+.table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.data-table { width: 100%; border-collapse: collapse; min-width: 300px; }
+.data-table th, .data-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; text-align: left; font-size: 13px; color: #2c3e50; white-space: nowrap; }
+.data-table th { background: #f5f6fa; color: #7f8c8d; font-weight: normal; }
+.btn-delete { background: #e74c3c; color: white; border: none; border-radius: 4px; padding: 5px 8px; cursor: pointer; }
+.empty { text-align: center; color: #7f8c8d; padding: 15px !important; }
+</style>

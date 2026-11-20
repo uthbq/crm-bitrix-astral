@@ -101,6 +101,21 @@
         </div>
       </div>
 
+      <div class="card" v-if="filters.base_id" style="border-left: 4px solid #9b59b6;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 15px;">
+          <h3 style="margin: 0;">📊 Отработка базы «{{ selectedBaseName }}» по менеджерам</h3>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button @click="baseChartMetric = 'calls'" :class="['metric-btn', { active: baseChartMetric === 'calls' }]">Звонки и Разговоры</button>
+            <button @click="baseChartMetric = 'leads'" :class="['metric-btn', { active: baseChartMetric === 'leads' }]">Кач. лиды и Оплаты</button>
+            <button @click="baseChartMetric = 'revenue'" :class="['metric-btn', { active: baseChartMetric === 'revenue' }]">Выручка (₽)</button>
+          </div>
+        </div>
+        <div v-if="managers.length === 0" class="empty">По этой базе нет активности менеджеров за выбранный период.</div>
+        <div v-else class="chart-container" style="height: 300px;">
+          <Bar :data="baseManagersChartData" :options="chartOptions" />
+        </div>
+      </div>
+
       <div class="card" v-if="dailyStats.length > 0">
         <h3>📈 Динамика звонков</h3>
         <div class="chart-container" style="height: 250px;">
@@ -152,14 +167,18 @@
 
       <div class="split-card-row">
         <div class="card" style="flex: 2; border-left: 4px solid #e74c3c;">
-          <h3>🛑 Топ причин отказов <span style="font-size: 12px; color: #7f8c8d; font-weight: normal;">(Нажмите для деталей)</span></h3>
+          <h3>
+            🛑 Топ причин отказов 
+            <span v-if="filters.base_id" style="font-size: 12px; color: #9b59b6; font-weight: normal;">(База: {{ selectedBaseName }})</span>
+            <span style="font-size: 12px; color: #7f8c8d; font-weight: normal;"> (Нажмите для деталей)</span>
+          </h3>
           <div class="table-responsive">
             <table class="data-table interactive-table">
               <thead>
                 <tr>
                   <th>Причина</th>
-                  <th style="width: 120px; text-align: center;">Лидов</th>
-                  <th style="width: 120px; text-align: center;">Доля (%)</th>
+                  <th style="width: 160px; text-align: center;">Лидов (к прошл. периоду)</th>
+                  <th style="width: 100px; text-align: center;">Доля (%)</th>
                 </tr>
               </thead>
               <tbody>
@@ -201,7 +220,7 @@
       </div>
       
       <div class="card">
-        <h3>🏆 Рейтинг менеджеров (Топ по выручке) <span style="font-size: 12px; font-weight: normal; color: #95a5a6; margin-left: 10px;">*нажмите на подчеркнутые цифры для деталей</span></h3>
+        <h3>🏆 Рейтинг менеджеров (Сравнение периодов) <span style="font-size: 12px; font-weight: normal; color: #95a5a6; margin-left: 10px;">*нажмите на подчеркнутые цифры для деталей</span></h3>
         <div class="table-responsive">
           <table class="data-table">
             <thead>
@@ -231,21 +250,28 @@
                   {{ m.total_calls }}
                   <span v-html="renderTrendHTML(m.total_calls, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'total_calls'))"></span>
                 </td>
-                <td>{{ m.valid_conversations }}</td>
                 <td>
-                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'quality_leads', `Кач. лиды: ${m.manager_name}`)">
+                  {{ m.valid_conversations }}
+                  <span v-html="renderTrendHTML(m.valid_conversations, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'valid_conversations'))"></span>
+                </td>
+                <td>
+                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, filters.base_id || null, 'quality_leads', `Кач. лиды: ${m.manager_name}`)">
                     {{ m.quality_leads }}
                   </span>
                   <span v-html="renderTrendHTML(m.quality_leads, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'quality_leads'))"></span>
                 </td>
-                <td style="color: #8e44ad; font-weight: bold;">{{ m.transfers }}</td>
+                <td style="color: #8e44ad; font-weight: bold;">
+                  {{ m.transfers }}
+                  <span v-html="renderTrendHTML(m.transfers, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'transfers'))"></span>
+                </td>
                 <td>
-                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'paid_deals', `Сделки: ${m.manager_name}`)">
+                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, filters.base_id || null, 'paid_deals', `Сделки: ${m.manager_name}`)">
                     {{ m.paid_deals }}
                   </span>
+                  <span v-html="renderTrendHTML(m.paid_deals, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'paid_deals'))"></span>
                 </td>
                 <td class="money">
-                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, null, 'paid_deals', `Выручка: ${m.manager_name}`)">
+                  <span class="drilldown-link" @click="openDrilldown(m.manager_id, filters.base_id || null, 'paid_deals', `Выручка: ${m.manager_name}`)">
                     {{ m.amount_sum.toLocaleString('ru-RU') }} ₽
                   </span>
                   <span v-html="renderTrendHTML(m.amount_sum, getPrevValue(managersPrev, 'manager_id', m.manager_id, 'amount_sum'))"></span>
@@ -257,7 +283,7 @@
       </div>
 
       <div class="card">
-        <h3>📁 Эффективность баз</h3>
+        <h3>📁 Эффективность баз (Сравнение периодов)</h3>
         <div class="table-responsive">
           <table class="data-table">
             <thead>
@@ -275,20 +301,21 @@
               <tr v-for="b in bases" :key="b.base_id">
                 <td><strong>{{ b.base_name }}</strong></td>
                 <td>
-                  <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'quality_leads', `Кач. лиды базы: ${b.base_name}`)">
+                  <span class="drilldown-link" @click="openDrilldown(filters.manager_id || null, b.base_id, 'quality_leads', `Кач. лиды базы: ${b.base_name}`)">
                     {{ b.quality_leads }}
                   </span>
                   <span v-html="renderTrendHTML(b.quality_leads, getPrevValue(basesPrev, 'base_id', b.base_id, 'quality_leads'))"></span>
                 </td>
                 <td>
-                  <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'paid_deals', `Сделки базы: ${b.base_name}`)">
+                  <span class="drilldown-link" @click="openDrilldown(filters.manager_id || null, b.base_id, 'paid_deals', `Сделки базы: ${b.base_name}`)">
                     {{ b.paid_deals }}
                   </span>
+                  <span v-html="renderTrendHTML(b.paid_deals, getPrevValue(basesPrev, 'base_id', b.base_id, 'paid_deals'))"></span>
                 </td>
                 <td class="money" style="color: #2980b9;">{{ b.main_amount.toLocaleString('ru-RU') }}</td>
                 <td style="color: #f39c12; font-weight: bold;">{{ b.cross_amount.toLocaleString('ru-RU') }}</td>
                 <td class="money">
-                  <span class="drilldown-link" @click="openDrilldown(null, b.base_id, 'paid_deals', `Выручка базы: ${b.base_name}`)">
+                  <span class="drilldown-link" @click="openDrilldown(filters.manager_id || null, b.base_id, 'paid_deals', `Выручка базы: ${b.base_name}`)">
                     {{ b.amount_sum.toLocaleString('ru-RU') }}
                   </span>
                   <span v-html="renderTrendHTML(b.amount_sum, getPrevValue(basesPrev, 'base_id', b.base_id, 'amount_sum'))"></span>
@@ -444,6 +471,7 @@ const managersList = ref<any[]>([]);
 const loading = ref(true);
 
 const filters = reactive({ period: 'week', base_id: '', manager_id: '' });
+const baseChartMetric = ref<'calls' | 'leads' | 'revenue'>('calls');
 
 const searchBaseQuery = ref('');
 const showBaseDropdown = ref(false);
@@ -463,6 +491,11 @@ const drilldownData = ref<any[]>([]);
 
 const showIssuesModal = ref(false);
 const dataIssues = ref({ total: 0, details: {} as any });
+
+const selectedBaseName = computed(() => {
+  const b = basesList.value.find(item => item.id === filters.base_id);
+  return b ? b.name : searchBaseQuery.value;
+});
 
 const filteredBasesList = computed(() => {
   if (!searchBaseQuery.value) return basesList.value;
@@ -528,15 +561,17 @@ const getPrevValue = (arr: any[], idKey: string, idVal: any, valKey: string) => 
 
 const renderTrendHTML = (current: number, previous: number) => {
   if (filters.period === 'all') return ''; 
-  if (current > previous) return `<span style="color: #27ae60; font-size: 11px; margin-left: 5px;">↑${current - previous}</span>`;
-  if (current < previous) return `<span style="color: #e74c3c; font-size: 11px; margin-left: 5px;">↓${previous - current}</span>`;
+  const diff = current - previous;
+  const pct = previous === 0 ? (current > 0 ? 100 : 0) : Math.round((Math.abs(diff) / previous) * 100);
+  if (diff > 0) return `<span style="color: #27ae60; font-size: 11px; margin-left: 5px;">↑${diff} (+${pct}%)</span>`;
+  if (diff < 0) return `<span style="color: #e74c3c; font-size: 11px; margin-left: 5px;">↓${Math.abs(diff)} (-${pct}%)</span>`;
   return `<span style="color: #95a5a6; font-size: 11px; margin-left: 5px;">—</span>`;
 };
 
 const getTrendClass = (cur: number, prev: number) => cur > prev ? 'trend-up' : (cur < prev ? 'trend-down' : 'trend-neutral');
 const getTrendArrow = (cur: number, prev: number) => cur > prev ? '↑' : (cur < prev ? '↓' : '—');
 const getTrendAbs = (cur: number, prev: number) => Math.abs(cur - prev);
-const getTrendPercent = (cur: number, prev: number) => prev === 0 ? 100 : Math.round((Math.abs(cur - prev) / prev) * 100);
+const getTrendPercent = (cur: number, prev: number) => prev === 0 ? (cur > 0 ? 100 : 0) : Math.round((Math.abs(cur - prev) / prev) * 100);
 
 const formatDate = (dateStr: string) => {
   if (!dateStr) return '';
@@ -555,6 +590,36 @@ const chartData = computed(() => {
     datasets: [
       { label: 'Исходящие наборы', backgroundColor: '#3498db', data: reversedStats.map(day => day.total_outbound) },
       { label: 'Разговоры', backgroundColor: '#2ecc71', data: reversedStats.map(day => day.valid_conversations) }
+    ]
+  };
+});
+
+const baseManagersChartData = computed(() => {
+  const topManagers = managers.value.slice(0, 15);
+  const labels = topManagers.map(m => m.manager_name);
+
+  if (baseChartMetric.value === 'calls') {
+    return {
+      labels,
+      datasets: [
+        { label: 'Звонки', backgroundColor: '#3498db', data: topManagers.map(m => m.total_calls) },
+        { label: 'Разговоры', backgroundColor: '#2ecc71', data: topManagers.map(m => m.valid_conversations) }
+      ]
+    };
+  }
+  if (baseChartMetric.value === 'leads') {
+    return {
+      labels,
+      datasets: [
+        { label: 'Кач. лиды', backgroundColor: '#9b59b6', data: topManagers.map(m => m.quality_leads) },
+        { label: 'Оплаты', backgroundColor: '#f39c12', data: topManagers.map(m => m.paid_deals) }
+      ]
+    };
+  }
+  return {
+    labels,
+    datasets: [
+      { label: 'Выручка (₽)', backgroundColor: '#27ae60', data: topManagers.map(m => m.amount_sum) }
     ]
   };
 });
@@ -750,6 +815,9 @@ onMounted(() => {
 .trend-up { color: #27ae60; }
 .trend-down { color: #e74c3c; }
 .trend-neutral { color: #95a5a6; }
+
+.metric-btn { background: #ecf0f1; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; color: #34495e; font-size: 12px; font-weight: bold; transition: 0.2s; }
+.metric-btn.active { background: #9b59b6; color: white; }
 
 .split-card-row { display: flex; gap: 30px; flex-wrap: wrap; margin-bottom: 30px; }
 .interactive-table tbody tr { cursor: pointer; transition: background 0.2s; }
