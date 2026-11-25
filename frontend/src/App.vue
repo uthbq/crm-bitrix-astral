@@ -6,6 +6,8 @@ import DirectorDashboard from './components/DirectorDashboard.vue';
 import PlansManager from './components/PlansManager.vue';
 import RatingsBoard from './components/RatingsBoard.vue';
 import DepartmentsManager from './components/DepartmentsManager.vue';
+import StuckEntities from './components/StuckEntities.vue';
+import TeamsFunnel from './components/TeamsFunnel.vue';
 
 const token = ref('');
 const authError = ref('');
@@ -154,6 +156,8 @@ const logout = () => {
       <nav class="nav-menu">
         <button @click="activeTab = 'dashboard'" :class="['nav-btn', { active: activeTab === 'dashboard' }]">📊 Дашборд</button>
         <button @click="activeTab = 'ratings'" :class="['nav-btn', { active: activeTab === 'ratings' }]">🏆 Доска почёта</button>
+        <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'teams'" :class="['nav-btn', { active: activeTab === 'teams' }]">🚀 Команды и Воронки</button>
+        <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'stuck'" :class="['nav-btn', { active: activeTab === 'stuck' }]">⏳ Зависшие</button>
         <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'users'" :class="['nav-btn', { active: activeTab === 'users' }]">👥 Сотрудники</button>
         <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'departments'" :class="['nav-btn', { active: activeTab === 'departments' }]">🏢 Отделы</button>
         <button v-if="userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT'" @click="activeTab = 'plans'" :class="['nav-btn', { active: activeTab === 'plans' }]">📅 Планы и Нормативы</button>
@@ -215,6 +219,14 @@ const logout = () => {
             <option value="DIRECTOR">Директор</option>
           </select>
           <button @click="createUser" class="btn-success w-full">Сохранить в базу</button>
+        </div>
+
+        <div v-if="activeTab === 'teams' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent centered-content">
+          <TeamsFunnel />
+        </div>
+
+        <div v-if="activeTab === 'stuck' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent centered-content">
+          <StuckEntities />
         </div>
 
         <div v-if="activeTab === 'departments' && (userRole === 'DIRECTOR' || userRole === 'HEAD_OF_DEPT')" class="w-full bg-transparent centered-content">

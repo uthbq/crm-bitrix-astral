@@ -196,8 +196,8 @@ app.get('/api/sync-leads', (req: any, res: any) => {
             let totalProcessed = 0;
 
             const stmtLead = db.prepare(`
-                INSERT INTO leads (bitrix_lead_id, inn, status_id, status_semantic, manager_id, segmentation, base_id, is_quality, refusal_reason_id, created_at) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO leads (bitrix_lead_id, inn, status_id, status_semantic, manager_id, segmentation, base_id, is_quality, refusal_reason_id, created_at, last_activity_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bitrix_lead_id) DO UPDATE SET
                     status_id = excluded.status_id,
                     status_semantic = excluded.status_semantic,
@@ -205,7 +205,8 @@ app.get('/api/sync-leads', (req: any, res: any) => {
                     segmentation = excluded.segmentation,
                     base_id = excluded.base_id,
                     is_quality = excluded.is_quality,
-                    refusal_reason_id = excluded.refusal_reason_id
+                    refusal_reason_id = excluded.refusal_reason_id,
+                    last_activity_at = excluded.last_activity_at
             `);
 
             const stmtReasonInsert = db.prepare('INSERT OR IGNORE INTO refusal_reasons (name) VALUES (?)');
@@ -275,6 +276,8 @@ app.get('/api/sync-leads', (req: any, res: any) => {
                             if (row) refusalReasonId = row.id;
                         }
 
+                        const lastActivity = lead.lastActivityAt || lead.updatedAt || lead.createdAt || null;
+
                         const info = stmtLead.run(
                             lead.id, 
                             lead.inn || null, 
@@ -285,7 +288,8 @@ app.get('/api/sync-leads', (req: any, res: any) => {
                             baseId,      
                             isQuality, 
                             refusalReasonId,
-                            lead.createdAt || null
+                            lead.createdAt || null,
+                            lastActivity
                         );
                         if (info.changes > 0) processedInChunk++;
                     }
@@ -314,19 +318,30 @@ app.get('/api/sync-deals', (req: any, res: any) => {
     (async () => {
         try {
             const maxIdResult = db.prepare("SELECT MAX(bitrix_deal_id) as maxId FROM deals").get() as any;
-            let afterId = maxIdResult.maxId || 0; 
+            let afterId = req.query.force === 'true' ? 0 : (maxIdResult.maxId || 0); 
             console.log(`🚀 Умная синхронизация сделок началась. Стартуем с afterId=${afterId}...`);
             
             let hasMore = true;
             let totalInserted = 0;
 
             const stmt = db.prepare(`
-                INSERT INTO deals (bitrix_deal_id, lead_id, manager_id, inn, stage_id, amount, created_at) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO deals (
+                    bitrix_deal_id, lead_id, manager_id, inn, company_title,
+                    category_id, category_name, stage_id, stage_name, stage_semantic,
+                    amount, created_at, stage_changed_at, last_activity_at
+                ) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bitrix_deal_id) DO UPDATE SET
+                    company_title = excluded.company_title,
+                    category_id = excluded.category_id,
+                    category_name = excluded.category_name,
                     stage_id = excluded.stage_id,
+                    stage_name = excluded.stage_name,
+                    stage_semantic = excluded.stage_semantic,
                     manager_id = excluded.manager_id,
-                    amount = excluded.amount
+                    amount = excluded.amount,
+                    stage_changed_at = excluded.stage_changed_at,
+                    last_activity_at = excluded.last_activity_at
             `);
 
             while (hasMore) {
@@ -340,9 +355,27 @@ app.get('/api/sync-deals', (req: any, res: any) => {
                 db.transaction((dealsChunk) => {
                     for (const deal of dealsChunk) {
                         const stageId = deal.stage ? deal.stage.id : null;
+                        const stageName = deal.stage ? deal.stage.name : null;
+                        const stageSemantic = deal.stage ? deal.stage.semantic : null;
+                        const categoryId = deal.category ? deal.category.id : 0;
+                        const categoryName = deal.category ? deal.category.name : 'Общая воронка';
+                        const lastActivity = deal.lastActivityAt || deal.updatedAt || deal.createdAt || null;
+
                         const info = stmt.run(
-                            deal.id, deal.leadId || null, deal.assignedById, deal.inn || null, 
-                            stageId, deal.amount || 0, deal.createdAt || null
+                            deal.id,
+                            deal.leadId || null,
+                            deal.assignedById,
+                            deal.inn || null,
+                            deal.companyTitle || null,
+                            categoryId,
+                            categoryName,
+                            stageId,
+                            stageName,
+                            stageSemantic,
+                            deal.amount || 0,
+                            deal.createdAt || null,
+                            deal.stageChangedAt || null,
+                            lastActivity
                         );
                         if (info.changes > 0) insertedInChunk++;
                     }
@@ -357,12 +390,230 @@ app.get('/api/sync-deals', (req: any, res: any) => {
                 }
             }
 
-            console.log(`✅ Синхронизация сделок завершена! Обраработано: ${totalInserted}`);
+            console.log(`✅ Синхронизация сделок завершена! Обработано: ${totalInserted}`);
             if (totalInserted > 0) await fetch('http://localhost:3000/api/calculate-daily-stats');
         } catch (error) {
             console.error('❌ Ошибка синхронизации сделок:', error);
         }
     })();
+});
+
+app.get('/api/analytics/teams-funnel', (req: any, res: any) => {
+    try {
+        const { startDate, endDate, category_id, department_id, onlyTm } = req.query;
+
+        let where: string[] = ['1=1'];
+        let params: any[] = [];
+
+        if (startDate) { where.push('date(d.created_at) >= ?'); params.push(startDate); }
+        if (endDate) { where.push('date(d.created_at) <= ?'); params.push(endDate); }
+        if (category_id !== undefined && category_id !== '') {
+            where.push('d.category_id = ?');
+            params.push(Number(category_id));
+        }
+        if (department_id) {
+            where.push('u.department_id = ?');
+            params.push(Number(department_id));
+        }
+        if (onlyTm === 'true') {
+            where.push(`(
+                d.lead_id IS NOT NULL 
+                OR d.tm_mark = 1 
+                OR (d.inn IS NOT NULL AND d.inn != '' AND d.inn IN (SELECT DISTINCT inn FROM leads WHERE inn IS NOT NULL AND inn != ''))
+            )`);
+        }
+
+        const whereClause = 'WHERE ' + where.join(' AND ');
+
+        const categories = db.prepare(`
+            SELECT DISTINCT category_id as id, COALESCE(category_name, 'Воронка #' || category_id) as name
+            FROM deals
+            WHERE category_id IS NOT NULL
+            ORDER BY category_id ASC
+        `).all();
+
+        const summary = db.prepare(`
+            SELECT 
+                COUNT(d.id) as total_deals,
+                SUM(CASE WHEN d.stage_semantic = 'P' OR d.stage_semantic IS NULL THEN 1 ELSE 0 END) as in_work,
+                SUM(CASE WHEN d.stage_semantic = 'S' THEN 1 ELSE 0 END) as won_deals,
+                SUM(CASE WHEN d.stage_semantic = 'F' THEN 1 ELSE 0 END) as lost_deals,
+                SUM(CASE WHEN d.stage_semantic = 'S' THEN d.amount ELSE 0 END) as won_amount,
+                ROUND(AVG(CASE 
+                    WHEN d.stage_semantic = 'S' AND d.stage_changed_at IS NOT NULL AND d.created_at IS NOT NULL 
+                    THEN MAX(0, julianday(d.stage_changed_at) - julianday(d.created_at)) 
+                END), 1) as avg_days_to_pay,
+                ROUND(AVG(CASE 
+                    WHEN d.stage_semantic = 'F' AND d.stage_changed_at IS NOT NULL AND d.created_at IS NOT NULL 
+                    THEN MAX(0, julianday(d.stage_changed_at) - julianday(d.created_at)) 
+                END), 1) as avg_days_to_loss
+            FROM deals d
+            LEFT JOIN users u ON d.manager_id = u.bitrix_id
+            ${whereClause}
+        `).get(...params);
+
+        const byDepartment = db.prepare(`
+            SELECT 
+                COALESCE(dept.id, 0) as department_id,
+                COALESCE(dept.name, 'Без отдела') as department_name,
+                COUNT(d.id) as total_deals,
+                SUM(CASE WHEN d.stage_semantic = 'P' OR d.stage_semantic IS NULL THEN 1 ELSE 0 END) as in_work,
+                SUM(CASE WHEN d.stage_semantic = 'S' THEN 1 ELSE 0 END) as won_deals,
+                SUM(CASE WHEN d.stage_semantic = 'F' THEN 1 ELSE 0 END) as lost_deals,
+                SUM(CASE WHEN d.stage_semantic = 'S' THEN d.amount ELSE 0 END) as won_amount
+            FROM deals d
+            LEFT JOIN users u ON d.manager_id = u.bitrix_id
+            LEFT JOIN departments dept ON u.department_id = dept.id
+            ${whereClause}
+            GROUP BY COALESCE(dept.id, 0)
+            ORDER BY won_amount DESC, total_deals DESC
+        `).all(...params);
+
+        const lossStages = db.prepare(`
+            SELECT 
+                COALESCE(d.stage_name, d.stage_id, 'Не указана') as stage_name,
+                COALESCE(d.category_name, 'Общая воронка') as category_name,
+                COUNT(d.id) as count
+            FROM deals d
+            LEFT JOIN users u ON d.manager_id = u.bitrix_id
+            ${whereClause} AND d.stage_semantic = 'F'
+            GROUP BY d.stage_id, d.category_id
+            ORDER BY count DESC
+            LIMIT 15
+        `).all(...params);
+
+        const managersRating = db.prepare(`
+            SELECT 
+                d.manager_id,
+                COALESCE(u.login, 'ID ' || d.manager_id) as manager_name,
+                COALESCE(dept.name, 'Без отдела') as department_name,
+                COUNT(d.id) as total_deals,
+                SUM(CASE WHEN d.stage_semantic = 'P' OR d.stage_semantic IS NULL THEN 1 ELSE 0 END) as in_work,
+                SUM(CASE WHEN d.stage_semantic = 'S' THEN 1 ELSE 0 END) as won_deals,
+                SUM(CASE WHEN d.stage_semantic = 'F' THEN 1 ELSE 0 END) as lost_deals,
+                SUM(CASE WHEN d.stage_semantic = 'S' THEN d.amount ELSE 0 END) as won_amount,
+                ROUND(AVG(CASE 
+                    WHEN d.stage_semantic = 'S' AND d.stage_changed_at IS NOT NULL AND d.created_at IS NOT NULL 
+                    THEN MAX(0, julianday(d.stage_changed_at) - julianday(d.created_at)) 
+                END), 1) as avg_days_to_pay
+            FROM deals d
+            LEFT JOIN users u ON d.manager_id = u.bitrix_id
+            LEFT JOIN departments dept ON u.department_id = dept.id
+            ${whereClause}
+            GROUP BY d.manager_id
+            ORDER BY won_amount DESC, won_deals DESC, total_deals DESC
+            LIMIT 30
+        `).all(...params);
+
+        const companiesRating = db.prepare(`
+            SELECT 
+                COALESCE(NULLIF(d.company_title, ''), 'ИНН ' || d.inn, 'Без компании') as company_name,
+                d.inn,
+                COUNT(d.id) as deals_count,
+                SUM(CASE WHEN d.stage_semantic = 'S' THEN 1 ELSE 0 END) as won_deals,
+                SUM(CASE WHEN d.stage_semantic = 'S' THEN d.amount ELSE 0 END) as won_amount
+            FROM deals d
+            LEFT JOIN users u ON d.manager_id = u.bitrix_id
+            ${whereClause} AND (d.company_title IS NOT NULL OR d.inn IS NOT NULL)
+            GROUP BY COALESCE(NULLIF(d.inn, ''), d.company_title)
+            ORDER BY won_amount DESC, deals_count DESC
+            LIMIT 25
+        `).all(...params);
+
+        res.json({
+            categories,
+            summary,
+            byDepartment,
+            lossStages,
+            managersRating,
+            companiesRating
+        });
+    } catch (error) {
+        console.error('Ошибка аналитики команд и воронок:', error);
+        res.status(500).json({ error: 'Ошибка загрузки аналитики команд' });
+    }
+});
+
+app.get('/api/analytics/stuck', (req: any, res: any) => {
+    try {
+        const entity = req.query.entity === 'leads' ? 'leads' : 'deals';
+        const days = Math.max(1, Number(req.query.days) || 7);
+        const { base_id, product_id, manager_id, department_id } = req.query;
+
+        let where: string[] = [];
+        let params: any[] = [];
+
+        if (entity === 'deals') {
+            where.push("(d.stage_semantic = 'P' OR d.stage_semantic IS NULL)");
+            where.push("CAST(julianday('now') - julianday(COALESCE(d.last_activity_at, d.created_at)) AS INTEGER) >= ?");
+            params.push(days);
+
+            if (base_id) { where.push('l.base_id = ?'); params.push(base_id); }
+            if (product_id) { where.push('b.main_product_id = ?'); params.push(product_id); }
+            if (manager_id) { where.push('d.manager_id = ?'); params.push(manager_id); }
+            if (department_id) { where.push('u.department_id = ?'); params.push(department_id); }
+
+            const query = `
+                SELECT 
+                    d.bitrix_deal_id as id,
+                    'deal' as entity_type,
+                    COALESCE(b.name, 'Без базы') as base_name,
+                    COALESCE(p.name, 'Без продукта') as product_name,
+                    COALESCE(u.login, 'ID ' || d.manager_id) as manager_name,
+                    COALESCE(dept.name, 'Без отдела') as department_name,
+                    COALESCE(d.stage_name, d.stage_id, 'Не указана') as stage,
+                    COALESCE(d.last_activity_at, d.created_at) as last_contact_at,
+                    CAST(julianday('now') - julianday(COALESCE(d.last_activity_at, d.created_at)) AS INTEGER) as days_stuck,
+                    d.amount
+                FROM deals d
+                LEFT JOIN leads l ON d.lead_id = l.bitrix_lead_id
+                LEFT JOIN bases b ON l.base_id = b.id
+                LEFT JOIN products p ON b.main_product_id = p.id
+                LEFT JOIN users u ON d.manager_id = u.bitrix_id
+                LEFT JOIN departments dept ON u.department_id = dept.id
+                WHERE ${where.join(' AND ')}
+                ORDER BY days_stuck DESC
+                LIMIT 200
+            `;
+            res.json(db.prepare(query).all(...params));
+        } else {
+            where.push("l.status_semantic = 'P'");
+            where.push("l.status_id NOT LIKE '%NEW%'");
+            where.push("CAST(julianday('now') - julianday(COALESCE(l.last_activity_at, l.created_at)) AS INTEGER) >= ?");
+            params.push(days);
+
+            if (base_id) { where.push('l.base_id = ?'); params.push(base_id); }
+            if (product_id) { where.push('b.main_product_id = ?'); params.push(product_id); }
+            if (manager_id) { where.push('l.manager_id = ?'); params.push(manager_id); }
+            if (department_id) { where.push('u.department_id = ?'); params.push(department_id); }
+
+            const query = `
+                SELECT 
+                    l.bitrix_lead_id as id,
+                    'lead' as entity_type,
+                    COALESCE(b.name, 'Без базы') as base_name,
+                    COALESCE(p.name, 'Без продукта') as product_name,
+                    COALESCE(u.login, 'ID ' || l.manager_id) as manager_name,
+                    COALESCE(dept.name, 'Без отдела') as department_name,
+                    COALESCE(l.status_id, 'В работе') as stage,
+                    COALESCE(l.last_activity_at, l.created_at) as last_contact_at,
+                    CAST(julianday('now') - julianday(COALESCE(l.last_activity_at, l.created_at)) AS INTEGER) as days_stuck,
+                    0 as amount
+                FROM leads l
+                LEFT JOIN bases b ON l.base_id = b.id
+                LEFT JOIN products p ON b.main_product_id = p.id
+                LEFT JOIN users u ON l.manager_id = u.bitrix_id
+                LEFT JOIN departments dept ON u.department_id = dept.id
+                WHERE ${where.join(' AND ')}
+                ORDER BY days_stuck DESC
+                LIMIT 200
+            `;
+            res.json(db.prepare(query).all(...params));
+        }
+    } catch (error) {
+        console.error('Ошибка получения зависших сущностей:', error);
+        res.status(500).json({ error: 'Ошибка загрузки зависших сделок/лидов' });
+    }
 });
 app.post('/api/users', authenticateToken, async (req: any, res: any): Promise<any> => {
     const creatorRole = req.user.role;

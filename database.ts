@@ -45,7 +45,8 @@ db.exec(`
     manager_id INTEGER,
     is_quality BOOLEAN DEFAULT 0,
     refusal_reason_id INTEGER,
-    created_at DATETIME
+    created_at DATETIME,
+    last_activity_at DATETIME
   );
 
   CREATE TABLE IF NOT EXISTS deals (
@@ -54,14 +55,21 @@ db.exec(`
     lead_id INTEGER,
     manager_id INTEGER,
     inn TEXT,
+    company_title TEXT,
     tm_mark BOOLEAN DEFAULT 0,
+    category_id INTEGER,
+    category_name TEXT,
     stage_id TEXT,
+    stage_name TEXT,
+    stage_semantic TEXT,
     products_list TEXT,
     product_field TEXT,
     amount REAL DEFAULT 0,
     payment_source TEXT,
     okved TEXT,
-    created_at DATETIME
+    created_at DATETIME,
+    stage_changed_at DATETIME,
+    last_activity_at DATETIME
   );
 
   CREATE TABLE IF NOT EXISTS bases (
@@ -131,6 +139,24 @@ db.exec(`
     FOREIGN KEY (base_id) REFERENCES bases(id) ON DELETE CASCADE
   );
 `);
+
+const safeMigrations = [
+  'ALTER TABLE leads ADD COLUMN last_activity_at DATETIME',
+  'ALTER TABLE deals ADD COLUMN last_activity_at DATETIME',
+  'ALTER TABLE deals ADD COLUMN stage_semantic TEXT',
+  'ALTER TABLE deals ADD COLUMN stage_name TEXT',
+  'ALTER TABLE deals ADD COLUMN category_id INTEGER',
+  'ALTER TABLE deals ADD COLUMN category_name TEXT',
+  'ALTER TABLE deals ADD COLUMN company_title TEXT',
+  'ALTER TABLE deals ADD COLUMN stage_changed_at DATETIME'
+];
+
+for (const sql of safeMigrations) {
+  try {
+    db.exec(sql);
+  } catch (e) {
+  }
+}
 
 const adminExists = db.prepare("SELECT id FROM users WHERE login = 'DIRECTOR'").get();
 if (!adminExists) {
