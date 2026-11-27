@@ -4,21 +4,21 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import cors from 'cors';
 import db from './database';
+import { registerSyncRoutes, runBackgroundSync, calculateDailyStats } from './sync';
+import { registerAnalyticsRoutes } from './analytics';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const SECRET_KEY = 'super-secret-key-123';
-const CACHE_LIFETIME_MS = 60 * 60 * 1000;
-let cachedUsers: any = null;
-let cacheTime = 0;
+const PORT = Number(process.env.PORT) || 3000;
+const SECRET_KEY = process.env.JWT_SECRET || 'super-secret-key-123';
+const SYNC_INTERVAL_MIN = Number(process.env.SYNC_INTERVAL_MIN) || 15;
 
 const authenticateToken = (req: any, res: any, next: any) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'Нет токена доступа' });
-
     jwt.verify(token, SECRET_KEY, (err: any, user: any) => {
         if (err) return res.status(403).json({ error: 'Токен недействителен' });
         req.user = user;
@@ -26,823 +26,348 @@ const authenticateToken = (req: any, res: any, next: any) => {
     });
 };
 
-app.post('/api/auth/login', async (req, res): Promise<any> => {
+const requireRole = (...roles: string[]) => (req: any, res: any, next: any) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+        return res.status(403).json({ error: 'Недостаточно прав для этого действия' });
+    }
+    next();
+};
+
+const trimOrNull = (v: any): string | null => {
+    if (v === undefined || v === null) return null;
+    const s = String(v).trim();
+    return s || null;
+};
+
+function recalcCrossForBase(baseId: number): void {
+    const main = db.prepare(`
+        SELECT p.name, p.bitrix_id
+        FROM bases b LEFT JOIN products p ON b.main_product_id = p.id
+        WHERE b.id = ?
+    `).get(baseId) as any;
+    const mainName = main?.name ?? null;
+    const mainBitrixId = main?.bitrix_id ?? null;
+
+    db.transaction(() => {
+        db.prepare(`
+            UPDATE deal_products SET is_cross_sale = CASE
+                WHEN ? IS NULL THEN 0
+                WHEN ? IS NOT NULL AND bitrix_product_id = ? THEN 0
+                WHEN norm_name(product_name) = norm_name(?) THEN 0
+                ELSE 1
+            END
+            WHERE bitrix_deal_id IN (
+                SELECT d.bitrix_deal_id FROM deals d
+                JOIN leads l ON d.lead_id = l.bitrix_lead_id
+                WHERE l.base_id = ?
+            )
+        `).run(mainName, mainBitrixId, mainBitrixId, mainName, baseId);
+
+        db.prepare(`
+            UPDATE deals SET is_cross_sale = COALESCE((
+                SELECT MAX(dp.is_cross_sale) FROM deal_products dp
+                WHERE dp.bitrix_deal_id = deals.bitrix_deal_id
+            ), 0)
+            WHERE bitrix_deal_id IN (
+                SELECT d.bitrix_deal_id FROM deals d
+                JOIN leads l ON d.lead_id = l.bitrix_lead_id
+                WHERE l.base_id = ?
+            )
+        `).run(baseId);
+    })();
+}
+
+app.post('/api/auth/login', async (req: any, res: any): Promise<any> => {
     const { login, password } = req.body;
+    if (!login || !password) return res.status(400).json({ error: 'Введите логин и пароль' });
     const user = db.prepare('SELECT * FROM users WHERE login = ?').get(login) as any;
-
     if (!user) return res.status(401).json({ error: 'Пользователь не найден' });
-
-    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
-    if (!isPasswordValid) return res.status(401).json({ error: 'Неверный пароль' });
-
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: 'Неверный пароль' });
     const token = jwt.sign(
         { id: user.id, role: user.role, bitrix_id: user.bitrix_id },
         SECRET_KEY,
         { expiresIn: '24h' }
     );
-
-    res.json({ message: 'Успешный вход', token, role: user.role });
+    res.json({
+        message: 'Успешный вход', token, role: user.role,
+        bitrix_id: user.bitrix_id, qualification: user.qualification || 'обычный'
+    });
 });
 
-app.get('/api/bitrix-users', authenticateToken, async (req: any, res: any) => {
-    const now = Date.now();
-    
-    if (cachedUsers && (now - cacheTime < CACHE_LIFETIME_MS)) {
-        return res.json(cachedUsers);
-    }
-
+app.get('/api/users', (req: any, res: any) => {
     try {
-        const response = await fetch(`${process.env.API_URL}/users`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.API_TOKEN}`
-            }
-        });
-        
-        const data = await response.json();
-        console.log("Ответ от API:", data);
-
-        if (!data.ok) {
-            throw new Error(data.message || 'Ошибка со стороны API Битрикса');
-        }
-
-        const users = data.users.map((u: any) => ({
-            id: u.id,
-            name: u.name || 'Без имени'
-        }));
-
-        cachedUsers = users;
-        cacheTime = now;
-        res.json(cachedUsers);
-    } catch (error) {
-        console.error('Ошибка:', error);
-        res.status(500).json({ error: 'Ошибка загрузки из API' });
+        res.json(db.prepare(`
+            SELECT u.id, u.bitrix_id, u.login, u.role, u.department_id,
+                COALESCE(u.qualification, 'обычный') as qualification,
+                d.name as department_name
+            FROM users u
+            LEFT JOIN departments d ON u.department_id = d.id
+            WHERE u.role IN ('MANAGER', 'HEAD_OF_DEPT')
+            ORDER BY u.login ASC
+        `).all());
+    } catch (e) {
+        console.error('Ошибка получения пользователей:', e);
+        res.status(500).json({ error: 'Ошибка получения пользователей' });
     }
 });
 
-app.get('/api/calls-test', async (req: any, res: any) => {
-    try {
-        const response = await fetch(`${process.env.API_URL}/calls?limit=5`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.API_TOKEN}`
-            }
-        });
-        
-        const data = await response.json();
-        
-        res.json(data);
-    } catch (error) {
-        console.error('Ошибка загрузки звонков:', error);
-        res.status(500).json({ error: 'Не удалось получить звонки' });
-    }
-});
-
-app.get('/api/sync-calls', (req: any, res: any) => {
-    res.json({ message: 'Умная синхронизация звонков запущена в фоне.' });
-
-    (async () => {
-        try {
-            const maxIdResult = db.prepare("SELECT MAX(bitrix_call_id) as maxId FROM calls").get() as any;
-            
-            let afterId = maxIdResult.maxId || 0; 
-            
-            console.log(`🚀 Умная синхронизация звонков началась. Стартуем с afterId=${afterId}...`);
-            
-            let hasMore = true;
-            let totalInserted = 0;
-
-            const stmt = db.prepare(`
-                INSERT OR IGNORE INTO calls 
-                (bitrix_call_id, manager_id, direction, duration_seconds, started_at, owner_type, owner_id) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            `);
-
-            while (hasMore) {
-                const url = `${process.env.API_URL}/calls?limit=500` + (afterId ? `&afterId=${afterId}` : '');
-                
-                const response = await fetch(url, {
-                    headers: { 'Authorization': `Bearer ${process.env.API_TOKEN}` }
-                });
-                
-                const data = await response.json();
-
-                if (!data.ok || !data.calls || data.calls.length === 0) {
-                    break;
-                }
-
-                let insertedInChunk = 0;
-                db.transaction((callsChunk) => {
-                    for (const call of callsChunk) {
-                        const startTime = call.startTime ? new Date(call.startTime).getTime() : 0;
-                        const endTime = call.endTime ? new Date(call.endTime).getTime() : startTime;
-                        const dur = startTime ? Math.max(0, Math.round((endTime - startTime) / 1000)) : 0;
-                        
-                        const info = stmt.run(
-                            call.id, call.responsibleId, call.direction, 
-                            dur, call.startTime || null, call.owner?.type || null, call.owner?.id || null
-                        );
-                        if (info.changes > 0) insertedInChunk++;
-                    }
-                })(data.calls);
-
-                totalInserted += insertedInChunk;
-                
-                if (data.dataComplete === true) {
-                    hasMore = false;
-                } else {
-                    afterId = Math.max(...data.calls.map((c: any) => c.id));
-                }
-            }
-
-            console.log(`✅ Синхронизация завершена! Новых звонков скачано: ${totalInserted}`);
-      
-            if (totalInserted > 0) {
-                await fetch('http://localhost:3000/api/calculate-daily-stats');
-                console.log('🔄 Статистика обновлена с учетом новых звонков.');
-            }
-        } catch (err) {
-            console.error('❌ Ошибка синхронизации:', err);
-        }
-    })();
-});
-app.get('/api/stats/calls', async (req: any, res: any) => {
-    try {
-        const stmt = db.prepare(`
-            SELECT 
-                manager_id,
-                COUNT(*) as total_outbound,
-                SUM(CASE WHEN duration_seconds >= 44 THEN 1 ELSE 0 END) as valid_conversations
-            FROM calls 
-            WHERE direction = 'outgoing'
-            GROUP BY manager_id
-        `);
-        
-        const stats = stmt.all();
-        res.json(stats);
-    } catch (error) {
-        console.error('Ошибка расчета статистики:', error);
-        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-    }
-});
-app.get('/api/sync-leads', (req: any, res: any) => {
-    res.json({ message: 'Синхронизация лидов запущена в фоне.' });
-
-    (async () => {
-        try {
-            const maxIdResult = db.prepare("SELECT MAX(bitrix_lead_id) as maxId FROM leads").get() as any;
-            let afterId = req.query.force === 'true' ? 0 : (maxIdResult.maxId || 0); 
-            console.log(`🚀 Синхронизация лидов началась. afterId=${afterId}...`);
-            
-            let hasMore = true;
-            let totalProcessed = 0;
-
-            const stmtLead = db.prepare(`
-                INSERT INTO leads (bitrix_lead_id, inn, status_id, status_semantic, manager_id, segmentation, base_id, is_quality, refusal_reason_id, created_at, last_activity_at) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(bitrix_lead_id) DO UPDATE SET
-                    status_id = excluded.status_id,
-                    status_semantic = excluded.status_semantic,
-                    manager_id = excluded.manager_id,
-                    segmentation = excluded.segmentation,
-                    base_id = excluded.base_id,
-                    is_quality = excluded.is_quality,
-                    refusal_reason_id = excluded.refusal_reason_id,
-                    last_activity_at = excluded.last_activity_at
-            `);
-
-            const stmtReasonInsert = db.prepare('INSERT OR IGNORE INTO refusal_reasons (name) VALUES (?)');
-            const stmtReasonSelect = db.prepare('SELECT id FROM refusal_reasons WHERE name = ?');
-            const stmtBaseInsert = db.prepare('INSERT OR IGNORE INTO bases (name) VALUES (?)');
-            const stmtBaseSelect = db.prepare('SELECT id FROM bases WHERE name = ?');
-
-            while (hasMore) {
-                const url = `${process.env.API_URL}/leads?limit=500&fields=yes` + (afterId ? `&afterId=${afterId}` : '');
-                const response = await fetch(url, { headers: { 'Authorization': `Bearer ${process.env.API_TOKEN}` } });
-                const data = await response.json();
-
-                if (!data.ok || !data.leads || data.leads.length === 0) break;
-
-                let processedInChunk = 0;
-                
-                db.transaction((leadsChunk) => {
-                    for (const lead of leadsChunk) {
-                        const statusId = lead.status ? lead.status.id : null;
-                        const statusSemantic = lead.status ? lead.status.semantic : null;
-                        const isQuality = (statusSemantic === 'S' || lead.isConverted) ? 1 : 0;
-                        
-                        const segmentsStr = lead.segments ? JSON.stringify(lead.segments) : null;
-                        
-                        let baseId = null;
-                        let extractedBaseName = null;
-                        
-                        if (Array.isArray(lead.segments) && lead.segments.length > 0) {
-                            const firstSeg = lead.segments[0];
-                            if (typeof firstSeg === 'string') {
-                                extractedBaseName = firstSeg;
-                            } else if (firstSeg && typeof firstSeg === 'object') {
-                                extractedBaseName = firstSeg.name || firstSeg.value || null;
-                            }
-                        }
-                        if (extractedBaseName) {
-                            const bName = extractedBaseName.trim();
-                            stmtBaseInsert.run(bName); 
-                            const baseRow = stmtBaseSelect.get(bName) as any;
-                            if (baseRow) baseId = baseRow.id;
-                        }
-                        
-                        let refusalReasonId = null;
-                        let rawReasonText = null;
-
-                        if (lead.fields) {
-                            for (const key in lead.fields) {
-                                const fieldTitle = lead.fields[key].title?.toLowerCase() || '';
-                                if (fieldTitle.includes('отказ') || fieldTitle.includes('причин') || fieldTitle.includes('почему')) {
-                                    rawReasonText = lead.fields[key].value;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (!rawReasonText && statusSemantic === 'F' && lead.status?.name) {
-                            const sName = lead.status.name;
-                            if (sName !== 'Некачественный лид' && sName !== 'Провал' && sName !== 'Junk') {
-                                rawReasonText = sName;
-                            }
-                        }
-
-                        if (rawReasonText && typeof rawReasonText === 'string') {
-                            const trimmedReason = rawReasonText.trim();
-                            stmtReasonInsert.run(trimmedReason);
-                            const row = stmtReasonSelect.get(trimmedReason) as any;
-                            if (row) refusalReasonId = row.id;
-                        }
-
-                        const lastActivity = lead.lastActivityAt || lead.updatedAt || lead.createdAt || null;
-
-                        const info = stmtLead.run(
-                            lead.id, 
-                            lead.inn || null, 
-                            statusId, 
-                            statusSemantic, 
-                            lead.assignedById, 
-                            segmentsStr, 
-                            baseId,      
-                            isQuality, 
-                            refusalReasonId,
-                            lead.createdAt || null,
-                            lastActivity
-                        );
-                        if (info.changes > 0) processedInChunk++;
-                    }
-                })(data.leads);
-
-                totalProcessed += processedInChunk;
-                
-                if (data.dataComplete === true || data.leads.length === 0) {
-                    hasMore = false;
-                } else {
-                    afterId = Math.max(...data.leads.map((l: any) => l.id));
-                }
-            }
-
-            console.log(`✅ Синхронизация лидов завершена! Обработано/обновлено: ${totalProcessed}`);
-            if (totalProcessed > 0) await fetch('http://localhost:3000/api/calculate-daily-stats');
-        } catch (error) {
-            console.error('❌ Ошибка синхронизации лидов:', error);
-        }
-    })();
-});
-
-app.get('/api/sync-deals', (req: any, res: any) => {
-    res.json({ message: 'Умная синхронизация сделок запущена в фоне.' });
-
-    (async () => {
-        try {
-            const maxIdResult = db.prepare("SELECT MAX(bitrix_deal_id) as maxId FROM deals").get() as any;
-            let afterId = req.query.force === 'true' ? 0 : (maxIdResult.maxId || 0); 
-            console.log(`🚀 Умная синхронизация сделок началась. Стартуем с afterId=${afterId}...`);
-            
-            let hasMore = true;
-            let totalInserted = 0;
-
-            const stmt = db.prepare(`
-                INSERT INTO deals (
-                    bitrix_deal_id, lead_id, manager_id, inn, company_title,
-                    category_id, category_name, stage_id, stage_name, stage_semantic,
-                    amount, created_at, stage_changed_at, last_activity_at
-                ) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(bitrix_deal_id) DO UPDATE SET
-                    company_title = excluded.company_title,
-                    category_id = excluded.category_id,
-                    category_name = excluded.category_name,
-                    stage_id = excluded.stage_id,
-                    stage_name = excluded.stage_name,
-                    stage_semantic = excluded.stage_semantic,
-                    manager_id = excluded.manager_id,
-                    amount = excluded.amount,
-                    stage_changed_at = excluded.stage_changed_at,
-                    last_activity_at = excluded.last_activity_at
-            `);
-
-            while (hasMore) {
-                const url = `${process.env.API_URL}/deals?limit=500` + (afterId ? `&afterId=${afterId}` : '');
-                const response = await fetch(url, { headers: { 'Authorization': `Bearer ${process.env.API_TOKEN}` } });
-                const data = await response.json();
-
-                if (!data.ok || !data.deals || data.deals.length === 0) break;
-
-                let insertedInChunk = 0;
-                db.transaction((dealsChunk) => {
-                    for (const deal of dealsChunk) {
-                        const stageId = deal.stage ? deal.stage.id : null;
-                        const stageName = deal.stage ? deal.stage.name : null;
-                        const stageSemantic = deal.stage ? deal.stage.semantic : null;
-                        const categoryId = deal.category ? deal.category.id : 0;
-                        const categoryName = deal.category ? deal.category.name : 'Общая воронка';
-                        const lastActivity = deal.lastActivityAt || deal.updatedAt || deal.createdAt || null;
-
-                        const info = stmt.run(
-                            deal.id,
-                            deal.leadId || null,
-                            deal.assignedById,
-                            deal.inn || null,
-                            deal.companyTitle || null,
-                            categoryId,
-                            categoryName,
-                            stageId,
-                            stageName,
-                            stageSemantic,
-                            deal.amount || 0,
-                            deal.createdAt || null,
-                            deal.stageChangedAt || null,
-                            lastActivity
-                        );
-                        if (info.changes > 0) insertedInChunk++;
-                    }
-                })(data.deals);
-
-                totalInserted += insertedInChunk;
-                
-                if (data.dataComplete === true) {
-                    hasMore = false;
-                } else {
-                    afterId = Math.max(...data.deals.map((d: any) => d.id));
-                }
-            }
-
-            console.log(`✅ Синхронизация сделок завершена! Обработано: ${totalInserted}`);
-            if (totalInserted > 0) await fetch('http://localhost:3000/api/calculate-daily-stats');
-        } catch (error) {
-            console.error('❌ Ошибка синхронизации сделок:', error);
-        }
-    })();
-});
-
-app.get('/api/analytics/teams-funnel', (req: any, res: any) => {
-    try {
-        const { startDate, endDate, category_id, department_id, onlyTm } = req.query;
-
-        let where: string[] = ['1=1'];
-        let params: any[] = [];
-
-        if (startDate) { where.push('date(d.created_at) >= ?'); params.push(startDate); }
-        if (endDate) { where.push('date(d.created_at) <= ?'); params.push(endDate); }
-        if (category_id !== undefined && category_id !== '') {
-            where.push('d.category_id = ?');
-            params.push(Number(category_id));
-        }
-        if (department_id) {
-            where.push('u.department_id = ?');
-            params.push(Number(department_id));
-        }
-        if (onlyTm === 'true') {
-            where.push(`(
-                d.lead_id IS NOT NULL 
-                OR d.tm_mark = 1 
-                OR (d.inn IS NOT NULL AND d.inn != '' AND d.inn IN (SELECT DISTINCT inn FROM leads WHERE inn IS NOT NULL AND inn != ''))
-            )`);
-        }
-
-        const whereClause = 'WHERE ' + where.join(' AND ');
-
-        const categories = db.prepare(`
-            SELECT DISTINCT category_id as id, COALESCE(category_name, 'Воронка #' || category_id) as name
-            FROM deals
-            WHERE category_id IS NOT NULL
-            ORDER BY category_id ASC
-        `).all();
-
-        const summary = db.prepare(`
-            SELECT 
-                COUNT(d.id) as total_deals,
-                SUM(CASE WHEN d.stage_semantic = 'P' OR d.stage_semantic IS NULL THEN 1 ELSE 0 END) as in_work,
-                SUM(CASE WHEN d.stage_semantic = 'S' THEN 1 ELSE 0 END) as won_deals,
-                SUM(CASE WHEN d.stage_semantic = 'F' THEN 1 ELSE 0 END) as lost_deals,
-                SUM(CASE WHEN d.stage_semantic = 'S' THEN d.amount ELSE 0 END) as won_amount,
-                ROUND(AVG(CASE 
-                    WHEN d.stage_semantic = 'S' AND d.stage_changed_at IS NOT NULL AND d.created_at IS NOT NULL 
-                    THEN MAX(0, julianday(d.stage_changed_at) - julianday(d.created_at)) 
-                END), 1) as avg_days_to_pay,
-                ROUND(AVG(CASE 
-                    WHEN d.stage_semantic = 'F' AND d.stage_changed_at IS NOT NULL AND d.created_at IS NOT NULL 
-                    THEN MAX(0, julianday(d.stage_changed_at) - julianday(d.created_at)) 
-                END), 1) as avg_days_to_loss
-            FROM deals d
-            LEFT JOIN users u ON d.manager_id = u.bitrix_id
-            ${whereClause}
-        `).get(...params);
-
-        const byDepartment = db.prepare(`
-            SELECT 
-                COALESCE(dept.id, 0) as department_id,
-                COALESCE(dept.name, 'Без отдела') as department_name,
-                COUNT(d.id) as total_deals,
-                SUM(CASE WHEN d.stage_semantic = 'P' OR d.stage_semantic IS NULL THEN 1 ELSE 0 END) as in_work,
-                SUM(CASE WHEN d.stage_semantic = 'S' THEN 1 ELSE 0 END) as won_deals,
-                SUM(CASE WHEN d.stage_semantic = 'F' THEN 1 ELSE 0 END) as lost_deals,
-                SUM(CASE WHEN d.stage_semantic = 'S' THEN d.amount ELSE 0 END) as won_amount
-            FROM deals d
-            LEFT JOIN users u ON d.manager_id = u.bitrix_id
-            LEFT JOIN departments dept ON u.department_id = dept.id
-            ${whereClause}
-            GROUP BY COALESCE(dept.id, 0)
-            ORDER BY won_amount DESC, total_deals DESC
-        `).all(...params);
-
-        const lossStages = db.prepare(`
-            SELECT 
-                COALESCE(d.stage_name, d.stage_id, 'Не указана') as stage_name,
-                COALESCE(d.category_name, 'Общая воронка') as category_name,
-                COUNT(d.id) as count
-            FROM deals d
-            LEFT JOIN users u ON d.manager_id = u.bitrix_id
-            ${whereClause} AND d.stage_semantic = 'F'
-            GROUP BY d.stage_id, d.category_id
-            ORDER BY count DESC
-            LIMIT 15
-        `).all(...params);
-
-        const managersRating = db.prepare(`
-            SELECT 
-                d.manager_id,
-                COALESCE(u.login, 'ID ' || d.manager_id) as manager_name,
-                COALESCE(dept.name, 'Без отдела') as department_name,
-                COUNT(d.id) as total_deals,
-                SUM(CASE WHEN d.stage_semantic = 'P' OR d.stage_semantic IS NULL THEN 1 ELSE 0 END) as in_work,
-                SUM(CASE WHEN d.stage_semantic = 'S' THEN 1 ELSE 0 END) as won_deals,
-                SUM(CASE WHEN d.stage_semantic = 'F' THEN 1 ELSE 0 END) as lost_deals,
-                SUM(CASE WHEN d.stage_semantic = 'S' THEN d.amount ELSE 0 END) as won_amount,
-                ROUND(AVG(CASE 
-                    WHEN d.stage_semantic = 'S' AND d.stage_changed_at IS NOT NULL AND d.created_at IS NOT NULL 
-                    THEN MAX(0, julianday(d.stage_changed_at) - julianday(d.created_at)) 
-                END), 1) as avg_days_to_pay
-            FROM deals d
-            LEFT JOIN users u ON d.manager_id = u.bitrix_id
-            LEFT JOIN departments dept ON u.department_id = dept.id
-            ${whereClause}
-            GROUP BY d.manager_id
-            ORDER BY won_amount DESC, won_deals DESC, total_deals DESC
-            LIMIT 30
-        `).all(...params);
-
-        const companiesRating = db.prepare(`
-            SELECT 
-                COALESCE(NULLIF(d.company_title, ''), 'ИНН ' || d.inn, 'Без компании') as company_name,
-                d.inn,
-                COUNT(d.id) as deals_count,
-                SUM(CASE WHEN d.stage_semantic = 'S' THEN 1 ELSE 0 END) as won_deals,
-                SUM(CASE WHEN d.stage_semantic = 'S' THEN d.amount ELSE 0 END) as won_amount
-            FROM deals d
-            LEFT JOIN users u ON d.manager_id = u.bitrix_id
-            ${whereClause} AND (d.company_title IS NOT NULL OR d.inn IS NOT NULL)
-            GROUP BY COALESCE(NULLIF(d.inn, ''), d.company_title)
-            ORDER BY won_amount DESC, deals_count DESC
-            LIMIT 25
-        `).all(...params);
-
-        res.json({
-            categories,
-            summary,
-            byDepartment,
-            lossStages,
-            managersRating,
-            companiesRating
-        });
-    } catch (error) {
-        console.error('Ошибка аналитики команд и воронок:', error);
-        res.status(500).json({ error: 'Ошибка загрузки аналитики команд' });
-    }
-});
-
-app.get('/api/analytics/stuck', (req: any, res: any) => {
-    try {
-        const entity = req.query.entity === 'leads' ? 'leads' : 'deals';
-        const days = Math.max(1, Number(req.query.days) || 7);
-        const { base_id, product_id, manager_id, department_id } = req.query;
-
-        let where: string[] = [];
-        let params: any[] = [];
-
-        if (entity === 'deals') {
-            where.push("(d.stage_semantic = 'P' OR d.stage_semantic IS NULL)");
-            where.push("CAST(julianday('now') - julianday(COALESCE(d.last_activity_at, d.created_at)) AS INTEGER) >= ?");
-            params.push(days);
-
-            if (base_id) { where.push('l.base_id = ?'); params.push(base_id); }
-            if (product_id) { where.push('b.main_product_id = ?'); params.push(product_id); }
-            if (manager_id) { where.push('d.manager_id = ?'); params.push(manager_id); }
-            if (department_id) { where.push('u.department_id = ?'); params.push(department_id); }
-
-            const query = `
-                SELECT 
-                    d.bitrix_deal_id as id,
-                    'deal' as entity_type,
-                    COALESCE(b.name, 'Без базы') as base_name,
-                    COALESCE(p.name, 'Без продукта') as product_name,
-                    COALESCE(u.login, 'ID ' || d.manager_id) as manager_name,
-                    COALESCE(dept.name, 'Без отдела') as department_name,
-                    COALESCE(d.stage_name, d.stage_id, 'Не указана') as stage,
-                    COALESCE(d.last_activity_at, d.created_at) as last_contact_at,
-                    CAST(julianday('now') - julianday(COALESCE(d.last_activity_at, d.created_at)) AS INTEGER) as days_stuck,
-                    d.amount
-                FROM deals d
-                LEFT JOIN leads l ON d.lead_id = l.bitrix_lead_id
-                LEFT JOIN bases b ON l.base_id = b.id
-                LEFT JOIN products p ON b.main_product_id = p.id
-                LEFT JOIN users u ON d.manager_id = u.bitrix_id
-                LEFT JOIN departments dept ON u.department_id = dept.id
-                WHERE ${where.join(' AND ')}
-                ORDER BY days_stuck DESC
-                LIMIT 200
-            `;
-            res.json(db.prepare(query).all(...params));
-        } else {
-            where.push("l.status_semantic = 'P'");
-            where.push("l.status_id NOT LIKE '%NEW%'");
-            where.push("CAST(julianday('now') - julianday(COALESCE(l.last_activity_at, l.created_at)) AS INTEGER) >= ?");
-            params.push(days);
-
-            if (base_id) { where.push('l.base_id = ?'); params.push(base_id); }
-            if (product_id) { where.push('b.main_product_id = ?'); params.push(product_id); }
-            if (manager_id) { where.push('l.manager_id = ?'); params.push(manager_id); }
-            if (department_id) { where.push('u.department_id = ?'); params.push(department_id); }
-
-            const query = `
-                SELECT 
-                    l.bitrix_lead_id as id,
-                    'lead' as entity_type,
-                    COALESCE(b.name, 'Без базы') as base_name,
-                    COALESCE(p.name, 'Без продукта') as product_name,
-                    COALESCE(u.login, 'ID ' || l.manager_id) as manager_name,
-                    COALESCE(dept.name, 'Без отдела') as department_name,
-                    COALESCE(l.status_id, 'В работе') as stage,
-                    COALESCE(l.last_activity_at, l.created_at) as last_contact_at,
-                    CAST(julianday('now') - julianday(COALESCE(l.last_activity_at, l.created_at)) AS INTEGER) as days_stuck,
-                    0 as amount
-                FROM leads l
-                LEFT JOIN bases b ON l.base_id = b.id
-                LEFT JOIN products p ON b.main_product_id = p.id
-                LEFT JOIN users u ON l.manager_id = u.bitrix_id
-                LEFT JOIN departments dept ON u.department_id = dept.id
-                WHERE ${where.join(' AND ')}
-                ORDER BY days_stuck DESC
-                LIMIT 200
-            `;
-            res.json(db.prepare(query).all(...params));
-        }
-    } catch (error) {
-        console.error('Ошибка получения зависших сущностей:', error);
-        res.status(500).json({ error: 'Ошибка загрузки зависших сделок/лидов' });
-    }
-});
 app.post('/api/users', authenticateToken, async (req: any, res: any): Promise<any> => {
     const creatorRole = req.user.role;
-    const { bitrix_id, login, password, role, department_id } = req.body;
-
-    if (creatorRole === 'MANAGER') {
-        return res.status(403).json({ error: 'Нет прав на создание сотрудников' });
-    }
+    const { bitrix_id, login, password, role, department_id, qualification } = req.body;
+    if (creatorRole === 'MANAGER') return res.status(403).json({ error: 'Нет прав на создание сотрудников' });
     if (creatorRole === 'HEAD_OF_DEPT' && role !== 'MANAGER') {
         return res.status(403).json({ error: 'Руководитель отдела может создавать только менеджеров' });
     }
-
-    const hash = await bcrypt.hash(password, 10);
-
+    if (!login || !password) return res.status(400).json({ error: 'Логин и пароль обязательны' });
+    if (qualification && !['обычный', 'ведущий'].includes(qualification)) {
+        return res.status(400).json({ error: 'Квалификация: обычный или ведущий' });
+    }
     try {
-        const stmt = db.prepare('INSERT INTO users (bitrix_id, login, password_hash, role, department_id) VALUES (?, ?, ?, ?, ?)');
-        stmt.run(bitrix_id, login, hash, role, department_id || null);
+        const hash = await bcrypt.hash(password, 10);
+        db.prepare(`
+            INSERT INTO users (bitrix_id, login, password_hash, role, department_id, qualification)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `).run(bitrix_id || null, login, hash, role || 'MANAGER', department_id || null, qualification || 'обычный');
         res.json({ message: `Пользователь ${login} успешно создан` });
     } catch (err: any) {
         res.status(400).json({ error: 'Ошибка сохранения: ' + err.message });
     }
 });
-app.get('/api/sync-segments', async (req: any, res: any) => {
-    try {
-        const response = await fetch(`${process.env.API_URL}/segments`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.API_TOKEN}`
-            }
-        });
-        
-        const data = await response.json();
 
-        if (!data.ok || !data.segments) {
-            return res.status(400).json({ error: 'Ошибка от API Битрикса' });
+app.put('/api/users/:id', authenticateToken, requireRole('DIRECTOR', 'HEAD_OF_DEPT'), async (req: any, res: any): Promise<any> => {
+    const id = Number(req.params.id);
+    const { role, qualification, department_id, password } = req.body;
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+    if (!user) return res.status(404).json({ error: 'Сотрудник не найден' });
+    if (role && req.user.role !== 'DIRECTOR') {
+        return res.status(403).json({ error: 'Менять роль может только директор' });
+    }
+    if (qualification && !['обычный', 'ведущий'].includes(qualification)) {
+        return res.status(400).json({ error: 'Квалификация: обычный или ведущий' });
+    }
+    try {
+        db.prepare(`
+            UPDATE users SET
+                role = ?,
+                qualification = ?,
+                department_id = ?
+            WHERE id = ?
+        `).run(
+            role || user.role,
+            qualification || user.qualification || 'обычный',
+            department_id === undefined ? user.department_id : (department_id || null),
+            id
+        );
+        if (password) {
+            const hash = await bcrypt.hash(password, 10);
+            db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, id);
         }
-
-        const stmtSegment = db.prepare(`
-            INSERT INTO segments (name, entity) 
-            VALUES (?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                entity = excluded.entity
-        `);
-        const stmtBase = db.prepare(`
-            INSERT OR IGNORE INTO bases (name) 
-            VALUES (?)
-        `);
-
-        const insertMany = db.transaction((segments) => {
-            for (const segment of segments) {
-                if (!segment.name) continue;
-                stmtSegment.run(segment.name, segment.entity);
-                stmtBase.run(segment.name); // База создастся сама!
-            }
-        });
-
-        insertMany(data.segments);
-
-        res.json({ 
-            message: 'Синхронизация сегментов и баз успешна', 
-            total_fetched: data.segments.length
-        });
-
-    } catch (error) {
-        console.error('Ошибка синхронизации сегментов:', error);
-        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+        if (qualification && qualification !== user.qualification) {
+            calculateDailyStats(); // пороги 44/59 изменились — пересчитываем разговоры
+        }
+        res.json({ message: 'Данные сотрудника обновлены' });
+    } catch (e: any) {
+        console.error('Ошибка обновления сотрудника:', e.message);
+        res.status(500).json({ error: 'Ошибка обновления сотрудника' });
     }
 });
-app.get('/api/calculate-daily-stats', (req: any, res: any) => {
+
+app.get('/api/users/:bitrix_id/info', (req: any, res: any) => {
     try {
-        const calculateAll = db.transaction(() => {
-            db.prepare('DELETE FROM daily_stats').run();
-            db.prepare(`
-                INSERT INTO daily_stats (
-                    date, manager_id, base_id, product_id, work_type, total_calls, valid_conversations
-                )
-                SELECT 
-                    date(c.started_at), 
-                    c.manager_id, 
-                    COALESCE(l.base_id, 0) as base_id, 
-                    0, 
-                    'primary', 
-                    COUNT(c.id),
-                    SUM(
-                        CASE 
-                            WHEN u.qualification = 'ведущий' AND c.duration_seconds >= 59 THEN 1
-                            WHEN (u.qualification = 'обычный' OR u.qualification IS NULL) AND c.duration_seconds >= 44 THEN 1
-                            ELSE 0 
-                        END
-                    )
-                FROM calls c
-                LEFT JOIN users u ON c.manager_id = u.bitrix_id
-                LEFT JOIN leads l ON c.owner_type = 'lead' AND c.owner_id = l.bitrix_lead_id
-                WHERE c.manager_id IS NOT NULL
-                GROUP BY date(c.started_at), c.manager_id, COALESCE(l.base_id, 0)
-            `).run();
-            
-            db.prepare(`
-                INSERT INTO daily_stats (
-                    date, manager_id, base_id, product_id, work_type, unique_leads, quality_leads, transfers
-                )
-                SELECT 
-                    date(created_at), 
-                    manager_id, 
-                    COALESCE(base_id, 0), 
-                    0, 
-                    'primary', 
-                    SUM(CASE WHEN status_id NOT LIKE '%NEW%' THEN 1 ELSE 0 END), 
-                    SUM(CASE WHEN is_quality = 1 THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status_semantic = 'S' THEN 1 ELSE 0 END)
-                FROM leads WHERE manager_id IS NOT NULL AND created_at IS NOT NULL
-                GROUP BY date(created_at), manager_id, COALESCE(base_id, 0)
-                ON CONFLICT(date, manager_id, base_id, product_id, work_type) DO UPDATE SET
-                    unique_leads = excluded.unique_leads,
-                    quality_leads = excluded.quality_leads,
-                    transfers = excluded.transfers
-            `).run();
-
-            db.prepare(`
-                INSERT INTO daily_stats (
-                    date, manager_id, base_id, product_id, work_type, paid_deals, amount_sum
-                )
-                SELECT 
-                    date(d.created_at), 
-                    d.manager_id, 
-                    COALESCE(l.base_id, 0), 
-                    0, 
-                    'primary', 
-                    COUNT(d.id), 
-                    SUM(d.amount)
-                FROM deals d
-                LEFT JOIN leads l ON d.lead_id = l.bitrix_lead_id
-                WHERE d.manager_id IS NOT NULL AND d.created_at IS NOT NULL AND d.amount > 0
-                GROUP BY date(d.created_at), d.manager_id, COALESCE(l.base_id, 0)
-                ON CONFLICT(date, manager_id, base_id, product_id, work_type) DO UPDATE SET
-                    paid_deals = excluded.paid_deals,
-                    amount_sum = excluded.amount_sum
-            `).run();
+        const user = db.prepare('SELECT qualification FROM users WHERE bitrix_id = ?').get(req.params.bitrix_id) as any;
+        const qualification = user?.qualification || null;
+        res.json({
+            qualification: qualification || 'обычный',
+            threshold: qualification === 'ведущий' ? 59 : 44,
+            qualification_missing: !qualification 
         });
-
-        calculateAll();
-        res.json({ message: 'Агрегация данных завершена (старая статистика очищена и пересчитана).' });
-    } catch (error) {
-        console.error('Ошибка агрегации:', error);
-        res.status(500).json({ error: 'Ошибка агрегации данных' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
 
-app.get('/api/dashboard', (req: any, res: any) => {
+app.get('/api/departments', (req: any, res: any) => {
     try {
-        const { manager_id, startDate, endDate, base_id } = req.query;
-        let where = [];
-        let params: any[] = [];
-
-        if (manager_id) { where.push('manager_id = ?'); params.push(manager_id); }
-        if (startDate) { where.push('date >= ?'); params.push(startDate); }
-        if (endDate) { where.push('date <= ?'); params.push(endDate); }
-        if (base_id) { where.push('base_id = ?'); params.push(base_id); }
-
-        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
-
-        const stats = db.prepare(`
-            SELECT 
-                date,
-                SUM(total_calls) as total_outbound,
-                SUM(valid_conversations) as valid_conversations,
-                SUM(unique_leads) as unique_leads,
-                SUM(quality_leads) as quality_leads,
-                SUM(transfers) as transfers,
-                SUM(paid_deals) as paid_deals,
-                SUM(amount_sum) as amount_sum
-            FROM daily_stats
-            ${whereClause}
-            GROUP BY date
-            ORDER BY date DESC
-        `).all(...params);
-        res.json(stats);
-    } catch (error) {
-        res.status(500).json({ error: 'Ошибка дашборда' });
+        res.json(db.prepare(`
+            SELECT d.id, d.name, COUNT(u.id) as members_count
+            FROM departments d
+            LEFT JOIN users u ON u.department_id = d.id
+            GROUP BY d.id ORDER BY d.id ASC
+        `).all());
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка загрузки отделов' });
     }
 });
+
+app.post('/api/departments', (req: any, res: any) => {
+    const name = trimOrNull(req.body.name);
+    if (!name) return res.status(400).json({ error: 'Название отдела обязательно' });
+    try {
+        const info = db.prepare('INSERT INTO departments (name) VALUES (?)').run(name);
+        res.json({ id: info.lastInsertRowid, name, message: 'Отдел создан' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка создания отдела' });
+    }
+});
+
+app.delete('/api/departments/:id', (req: any, res: any) => {
+    try {
+        db.transaction(() => {
+            db.prepare('UPDATE users SET department_id = NULL WHERE department_id = ?').run(req.params.id);
+            db.prepare('DELETE FROM departments WHERE id = ?').run(req.params.id);
+        })();
+        res.json({ message: 'Отдел удален' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка удаления отдела' });
+    }
+});
+
+app.put('/api/departments/:id/members', (req: any, res: any) => {
+    const deptId = Number(req.params.id);
+    const { userIds } = req.body;
+    if (!Array.isArray(userIds)) return res.status(400).json({ error: 'Ожидается массив userIds' });
+    try {
+        db.transaction(() => {
+            db.prepare('UPDATE users SET department_id = NULL WHERE department_id = ?').run(deptId);
+            const upd = db.prepare('UPDATE users SET department_id = ? WHERE id = ?');
+            for (const uid of userIds) upd.run(deptId, uid);
+        })();
+        res.json({ message: 'Состав отдела успешно обновлен' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка обновления состава отдела' });
+    }
+});
+
 app.get('/api/products', (req: any, res: any) => {
     try {
-        const products = db.prepare('SELECT * FROM products').all();
-        res.json(products);
-    } catch (error) {
+        res.json(db.prepare(`
+            SELECT p.id, p.name, p.bitrix_id, p.product_group,
+                (SELECT COUNT(*) FROM bases b WHERE b.main_product_id = p.id) as bases_count
+            FROM products p ORDER BY p.name ASC
+        `).all());
+    } catch (e) {
         res.status(500).json({ error: 'Ошибка получения списка продуктов' });
     }
 });
 
 app.post('/api/products', (req: any, res: any) => {
+    const name = trimOrNull(req.body.name);
+    if (!name) return res.status(400).json({ error: 'Имя продукта обязательно' });
     try {
-        const { name } = req.body;
-        if (!name) return res.status(400).json({ error: 'Имя продукта обязательно' });
-        
-        const info = db.prepare('INSERT INTO products (name) VALUES (?)').run(name);
+        const info = db.prepare(`
+            INSERT INTO products (name, bitrix_id, product_group) VALUES (?, ?, ?)
+        `).run(name, req.body.bitrix_id || null, trimOrNull(req.body.product_group));
         res.json({ id: info.lastInsertRowid, name, message: 'Продукт успешно добавлен' });
-    } catch (error: any) {
-        res.status(500).json({ error: error.message.includes('UNIQUE') ? 'Такой продукт уже существует' : 'Ошибка создания' });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message.includes('UNIQUE') ? 'Такой продукт уже существует' : 'Ошибка создания' });
+    }
+});
+
+app.put('/api/products/:id', (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id) as any;
+    if (!product) return res.status(404).json({ error: 'Продукт не найден' });
+    const name = trimOrNull(req.body.name) || product.name;
+    try {
+        db.prepare(`
+            UPDATE products SET name = ?, bitrix_id = ?, product_group = ? WHERE id = ?
+        `).run(
+            name,
+            req.body.bitrix_id === undefined ? product.bitrix_id : (req.body.bitrix_id || null),
+            req.body.product_group === undefined ? product.product_group : trimOrNull(req.body.product_group),
+            id
+        );
+        // Сопоставление изменилось — пересчитываем кросс по базам с этим продуктом
+        const affected = db.prepare('SELECT id FROM bases WHERE main_product_id = ?').all(id) as any[];
+        for (const b of affected) recalcCrossForBase(b.id);
+        res.json({ message: 'Продукт обновлен', recalculated_bases: affected.length });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message.includes('UNIQUE') ? 'Такое название уже занято' : 'Ошибка обновления' });
     }
 });
 
 app.delete('/api/products/:id', (req: any, res: any) => {
+    const id = Number(req.params.id);
     try {
-        db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
-        res.json({ message: 'Продукт удален' });
-    } catch (error) {
+        const affected = db.prepare('SELECT id FROM bases WHERE main_product_id = ?').all(id) as any[];
+        db.transaction(() => {
+            db.prepare('UPDATE bases SET main_product_id = NULL WHERE main_product_id = ?').run(id);
+            db.prepare('DELETE FROM products WHERE id = ?').run(id);
+        })();
+        for (const b of affected) recalcCrossForBase(b.id);
+        res.json({ message: 'Продукт удален', affected_bases: affected.length });
+    } catch (e) {
         res.status(500).json({ error: 'Ошибка удаления' });
+    }
+});
+
+app.get('/api/products/:id/deals', (req: any, res: any) => {
+    const id = Number(req.params.id);
+    try {
+        const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id) as any;
+        if (!product) return res.status(404).json({ error: 'Продукт не найден' });
+        res.json(db.prepare(`
+            SELECT d.bitrix_deal_id, d.company_title, d.inn, d.okved, d.amount,
+                d.stage_name, d.category_name, d.created_at, d.is_cross_sale,
+                dp.product_name, dp.quantity, dp.price, dp.sum as row_sum, dp.is_cross_sale as row_cross,
+                b.name as base_name,
+                COALESCE(u.login, 'ID ' || d.manager_id) as manager_name
+            FROM deal_products dp
+            JOIN deals d ON d.bitrix_deal_id = dp.bitrix_deal_id
+            LEFT JOIN leads l ON d.lead_id = l.bitrix_lead_id
+            LEFT JOIN bases b ON l.base_id = b.id
+            LEFT JOIN users u ON d.manager_id = u.bitrix_id
+            WHERE (? IS NOT NULL AND dp.bitrix_product_id = ?)
+               OR norm_name(dp.product_name) = norm_name(?)
+            ORDER BY d.created_at DESC LIMIT 200
+        `).all(product.bitrix_id, product.bitrix_id, product.name));
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка загрузки продаж продукта' });
     }
 });
 
 app.get('/api/bases', (req: any, res: any) => {
     try {
-        const bases = db.prepare('SELECT * FROM bases').all();
-        res.json(bases);
-    } catch (error) {
+        res.json(db.prepare(`
+            SELECT b.id, b.name, b.main_product_id, p.name as main_product_name
+            FROM bases b
+            LEFT JOIN products p ON b.main_product_id = p.id
+            ORDER BY b.name ASC
+        `).all());
+    } catch (e) {
         res.status(500).json({ error: 'Ошибка получения списка баз' });
     }
 });
 
 app.post('/api/bases', (req: any, res: any) => {
+    const name = trimOrNull(req.body.name);
+    if (!name) return res.status(400).json({ error: 'Имя базы обязательно' });
     try {
-        const { name, main_product_id } = req.body;
-        if (!name) return res.status(400).json({ error: 'Имя базы обязательно' });
-
         const info = db.prepare('INSERT INTO bases (name, main_product_id) VALUES (?, ?)')
-                       .run(name, main_product_id || null);
-        res.json({ id: info.lastInsertRowid, name, main_product_id, message: 'База успешно добавлена' });
-    } catch (error: any) {
-        res.status(500).json({ error: error.message.includes('UNIQUE') ? 'Такая база уже существует' : 'Ошибка создания' });
+            .run(name, req.body.main_product_id || null);
+        if (req.body.main_product_id) recalcCrossForBase(Number(info.lastInsertRowid));
+        res.json({ id: info.lastInsertRowid, name, message: 'База успешно добавлена' });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message.includes('UNIQUE') ? 'Такая база уже существует' : 'Ошибка создания' });
+    }
+});
+
+app.put('/api/bases/:id', (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const base = db.prepare('SELECT * FROM bases WHERE id = ?').get(id) as any;
+    if (!base) return res.status(404).json({ error: 'База не найдена' });
+    const name = trimOrNull(req.body.name) || base.name;
+    const mainProductId = req.body.main_product_id === undefined
+        ? base.main_product_id
+        : (req.body.main_product_id || null);
+    try {
+        db.prepare('UPDATE bases SET name = ?, main_product_id = ? WHERE id = ?')
+            .run(name, mainProductId, id);
+        if (mainProductId !== base.main_product_id) recalcCrossForBase(id);
+        res.json({ message: 'База обновлена. Кросс-продажи пересчитаны по товарам.' });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message.includes('UNIQUE') ? 'Такое название уже занято' : 'Ошибка обновления' });
     }
 });
 
@@ -850,20 +375,98 @@ app.delete('/api/bases/:id', (req: any, res: any) => {
     try {
         db.prepare('DELETE FROM bases WHERE id = ?').run(req.params.id);
         res.json({ message: 'База удалена' });
-    } catch (error) {
+    } catch (e) {
         res.status(500).json({ error: 'Ошибка удаления' });
     }
 });
 
+app.get('/api/segments', (req: any, res: any) => {
+    try {
+        res.json(db.prepare('SELECT * FROM segments ORDER BY name ASC').all());
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка загрузки сегментов' });
+    }
+});
+
+app.post('/api/segments', (req: any, res: any) => {
+    const name = trimOrNull(req.body.name);
+    if (!name) return res.status(400).json({ error: 'Название сегмента обязательно' });
+    try {
+        db.prepare(`
+            INSERT INTO segments (name, entity) VALUES (?, ?)
+            ON CONFLICT(name) DO UPDATE SET entity = excluded.entity
+        `).run(name, trimOrNull(req.body.entity) || 'lead');
+        res.json({ message: 'Сегмент сохранен' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка сохранения сегмента' });
+    }
+});
+
+app.delete('/api/segments/:id', (req: any, res: any) => {
+    try {
+        db.prepare('DELETE FROM segments WHERE id = ?').run(req.params.id);
+        res.json({ message: 'Сегмент удален' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка удаления' });
+    }
+});
+
+app.get('/api/refusal-reasons', (req: any, res: any) => {
+    try {
+        res.json(db.prepare('SELECT * FROM refusal_reasons ORDER BY name ASC').all());
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка загрузки причин отказов' });
+    }
+});
+
+app.post('/api/refusal-reasons', (req: any, res: any) => {
+    const name = trimOrNull(req.body.name);
+    if (!name) return res.status(400).json({ error: 'Название обязательно' });
+    try {
+        db.prepare('INSERT INTO refusal_reasons (name) VALUES (?)').run(name);
+        res.json({ message: 'Причина успешно добавлена' });
+    } catch (e: any) {
+        res.status(e.code === 'SQLITE_CONSTRAINT_UNIQUE' ? 400 : 500)
+            .json({ error: e.code === 'SQLITE_CONSTRAINT_UNIQUE' ? 'Такая причина уже существует' : 'Ошибка сохранения' });
+    }
+});
+
+app.put('/api/refusal-reasons/:id', (req: any, res: any) => {
+    const name = trimOrNull(req.body.name);
+    if (!name) return res.status(400).json({ error: 'Название обязательно' });
+    try {
+        db.prepare('UPDATE refusal_reasons SET name = ? WHERE id = ?').run(name, req.params.id);
+        res.json({ message: 'Причина обновлена' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка обновления' });
+    }
+});
+
+app.delete('/api/refusal-reasons/:id', (req: any, res: any) => {
+    try {
+        db.transaction(() => {
+            db.prepare('UPDATE leads SET refusal_reason_id = NULL WHERE refusal_reason_id = ?').run(req.params.id);
+            db.prepare('DELETE FROM refusal_reasons WHERE id = ?').run(req.params.id);
+        })();
+        res.json({ message: 'Причина удалена' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка удаления' });
+    }
+});
+
+const NUMERATORS = ['quality_leads', 'paid_deals', 'transfers'];
+const DENOMINATORS = ['unique_leads', 'quality_leads', 'total_calls', 'valid_conversations'];
+const CALC_TYPES = ['уникальные лиды', 'события', 'сделки'];
+
 app.get('/api/conversions', (req: any, res: any) => {
     try {
-        const rules = db.prepare(`
-            SELECT c.*, b.name as base_name 
-            FROM conversion_rules c 
+        res.json(db.prepare(`
+            SELECT c.*, b.name as base_name
+            FROM conversion_rules c
             JOIN bases b ON c.base_id = b.id
-        `).all();
-        res.json(rules);
-    } catch (error) {
+            ORDER BY b.name ASC
+        `).all());
+    } catch (e) {
         res.status(500).json({ error: 'Ошибка загрузки правил конверсии' });
     }
 });
@@ -872,663 +475,278 @@ app.post('/api/conversions', (req: any, res: any) => {
     try {
         const { base_id, numerator, denominator, calc_type, product_type, cycle_type } = req.body;
         if (!base_id || !numerator || !denominator) {
-            return res.status(400).json({ error: 'Заполните все поля' });
+            return res.status(400).json({ error: 'Заполните базу, числитель и знаменатель' });
         }
-
-        if (numerator === 'paid_deals' && (denominator === 'total_calls' || denominator === 'valid_conversations')) {
-            return res.status(400).json({ error: 'Ошибка логики: Нельзя делить оплаты на звонки без правила связи.' });
+        if (!NUMERATORS.includes(numerator) || !DENOMINATORS.includes(denominator)) {
+            return res.status(400).json({ error: 'Недопустимая метрика в формуле' });
         }
+        if (numerator === 'paid_deals' && ['total_calls', 'valid_conversations'].includes(denominator)) {
+            return res.status(400).json({ error: 'Ошибка логики: нельзя делить оплаты на звонки без правила связи.' });
+        }
+        if (calc_type && !CALC_TYPES.includes(calc_type)) {
+            return res.status(400).json({ error: 'Недопустимый способ подсчёта' });
+        }
+        let excluded: string[] = [];
+        try { excluded = JSON.parse(req.body.excluded_statuses || '[]'); } catch (e) { excluded = []; }
+        if (!Array.isArray(excluded)) excluded = [];
+        if (!excluded.includes('IMPORT')) excluded.push('IMPORT');
 
         db.prepare(`
-            INSERT INTO conversion_rules (base_id, numerator, denominator, calc_type, product_type, cycle_type, version) 
-            VALUES (?, ?, ?, ?, ?, ?, 1)
-            ON CONFLICT(base_id) DO UPDATE SET 
-                numerator = excluded.numerator, 
-                denominator = excluded.denominator, 
+            INSERT INTO conversion_rules
+                (base_id, numerator, denominator, calc_type, product_type, cycle_type, excluded_statuses, version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(base_id) DO UPDATE SET
+                numerator = excluded.numerator,
+                denominator = excluded.denominator,
                 calc_type = excluded.calc_type,
-                product_type = excluded.product_type, 
-                cycle_type = excluded.cycle_type, 
-                version = version + 1
+                product_type = excluded.product_type,
+                cycle_type = excluded.cycle_type,
+                excluded_statuses = excluded.excluded_statuses,
+                version = conversion_rules.version + 1
         `).run(
-            base_id, 
-            numerator, 
-            denominator, 
-            calc_type || 'уникальные лиды', 
-            product_type || 'all', 
-            cycle_type || 'all'
+            base_id, numerator, denominator,
+            calc_type || 'уникальные лиды',
+            product_type || 'all',
+            cycle_type || 'all',
+            JSON.stringify(excluded)
         );
-        
         res.json({ message: 'Правило успешно сохранено' });
-    } catch (error) {
-        console.error('Ошибка сохранения правила:', error);
+    } catch (e) {
+        console.error('Ошибка сохранения правила:', e);
         res.status(500).json({ error: 'Ошибка сохранения' });
     }
 });
 
-app.get('/api/analytics/managers', (req: any, res: any) => {
+app.delete('/api/conversions/:id', (req: any, res: any) => {
     try {
-        const { startDate, endDate, base_id } = req.query;
-        let where = [];
-        let params: any[] = [];
-
-        if (startDate) { where.push('ds.date >= ?'); params.push(startDate); }
-        if (endDate) { where.push('ds.date <= ?'); params.push(endDate); }
-        if (base_id) { where.push('ds.base_id = ?'); params.push(base_id); }
-
-        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
-
-        const stats = db.prepare(`
-            SELECT 
-                ds.manager_id,
-                COALESCE(u.login, 'ID ' || ds.manager_id) as manager_name,
-                SUM(ds.total_calls) as total_calls,
-                SUM(ds.valid_conversations) as valid_conversations,
-                SUM(ds.unique_leads) as unique_leads,
-                SUM(ds.quality_leads) as quality_leads,
-                SUM(ds.transfers) as transfers,
-                SUM(ds.paid_deals) as paid_deals,
-                SUM(ds.amount_sum) as amount_sum
-            FROM daily_stats ds
-            LEFT JOIN users u ON ds.manager_id = u.bitrix_id
-            ${whereClause}
-            GROUP BY ds.manager_id
-            ORDER BY amount_sum DESC, quality_leads DESC, valid_conversations DESC, total_calls DESC
-        `).all(...params);
-        res.json(stats);
-    } catch (error) {
-        console.error('Ошибка рейтинга:', error);
-        res.status(500).json({ error: 'Ошибка получения рейтинга' });
-    }
-});
-
-app.get('/api/analytics/bases', (req: any, res: any) => {
-    try {
-        const { startDate, endDate, manager_id } = req.query;
-        
-        let whereL = []; let paramsL: any[] = [];
-        let whereD = ['d.amount > 0']; let paramsD: any[] = [];
-
-        if (startDate) { 
-            whereL.push('date(l.created_at) >= ?'); paramsL.push(startDate);
-            whereD.push('date(d.created_at) >= ?'); paramsD.push(startDate);
-        }
-        if (endDate) { 
-            whereL.push('date(l.created_at) <= ?'); paramsL.push(endDate);
-            whereD.push('date(d.created_at) <= ?'); paramsD.push(endDate);
-        }
-        if (manager_id) {
-            whereL.push('l.manager_id = ?'); paramsL.push(manager_id);
-            whereD.push('d.manager_id = ?'); paramsD.push(manager_id);
-        }
-
-        const whereClauseL = whereL.length ? 'WHERE ' + whereL.join(' AND ') : '';
-        const whereClauseD = whereD.length ? 'WHERE ' + whereD.join(' AND ') : '';
-
-        const query = `
-            WITH LeadsStats AS (
-                SELECT 
-                    b.id as base_id,
-                    b.name as base_name,
-                    SUM(CASE WHEN l.is_quality = 1 THEN 1 ELSE 0 END) as quality_leads
-                FROM bases b
-                LEFT JOIN leads l ON b.id = l.base_id
-                ${whereClauseL}
-                GROUP BY b.id
-            ),
-            DealsStats AS (
-                SELECT 
-                    b.id as base_id,
-                    COUNT(d.id) as paid_deals,
-                    SUM(d.amount) as amount_sum,
-                    SUM(CASE WHEN d.product_field IS NOT NULL AND CAST(d.product_field AS TEXT) != CAST(b.main_product_id AS TEXT) THEN d.amount ELSE 0 END) as cross_amount,
-                    SUM(CASE WHEN d.product_field IS NULL OR CAST(d.product_field AS TEXT) = CAST(b.main_product_id AS TEXT) OR b.main_product_id IS NULL THEN d.amount ELSE 0 END) as main_amount
-                FROM bases b
-                LEFT JOIN leads l ON b.id = l.base_id
-                JOIN deals d ON l.bitrix_lead_id = d.lead_id
-                ${whereClauseD}
-                GROUP BY b.id
-            )
-            SELECT 
-                ls.base_id,
-                ls.base_name,
-                ls.quality_leads,
-                COALESCE(ds.paid_deals, 0) as paid_deals,
-                COALESCE(ds.amount_sum, 0) as amount_sum,
-                COALESCE(ds.main_amount, 0) as main_amount,
-                COALESCE(ds.cross_amount, 0) as cross_amount
-            FROM LeadsStats ls
-            LEFT JOIN DealsStats ds ON ls.base_id = ds.base_id
-            ORDER BY amount_sum DESC, quality_leads DESC
-        `;
-
-        const stats = db.prepare(query).all(...paramsL, ...paramsD);
-        res.json(stats);
-    } catch (error) {
-        console.error('Ошибка аналитики баз:', error);
-        res.status(500).json({ error: 'Ошибка получения аналитики баз' });
+        db.prepare('DELETE FROM conversion_rules WHERE id = ?').run(req.params.id);
+        res.json({ message: 'Правило удалено' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка удаления правила' });
     }
 });
 
 app.get('/api/plans', (req: any, res: any) => {
+    const { manager_id, month } = req.query;
+    if (!manager_id || !month) return res.status(400).json({ error: 'Нужны manager_id и month' });
     try {
-        const { manager_id, month } = req.query;
-        if (!manager_id || !month) {
-            return res.status(400).json({ error: 'Нужны manager_id и month' });
-        }
-
         const plan = db.prepare('SELECT * FROM plans WHERE manager_id = ? AND month = ?').get(manager_id, month);
         res.json(plan || { manager_id, month, working_days: 21, calls_norm: 0, leads_norm: 0 });
-    } catch (error) {
+    } catch (e) {
         res.status(500).json({ error: 'Ошибка получения плана' });
     }
 });
 
 app.post('/api/plans', (req: any, res: any) => {
+    const { manager_id, month, working_days, calls_norm, leads_norm } = req.body;
+    if (!manager_id || !month) return res.status(400).json({ error: 'Обязательные поля: manager_id, month' });
+    const days = Number(working_days) || 21;
+    if (days < 1 || days > 31) return res.status(400).json({ error: 'Рабочих дней должно быть от 1 до 31' });
     try {
-        const { manager_id, month, working_days, calls_norm, leads_norm } = req.body;
-        if (!manager_id || !month) {
-            return res.status(400).json({ error: 'Обязательные поля: manager_id, month' });
-        }
-
         db.prepare(`
             INSERT INTO plans (manager_id, month, working_days, calls_norm, leads_norm)
             VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(month, manager_id) DO UPDATE SET
+            ON CONFLICT(manager_id, month) DO UPDATE SET
                 working_days = excluded.working_days,
                 calls_norm = excluded.calls_norm,
                 leads_norm = excluded.leads_norm
-        `).run(manager_id, month, working_days || 21, calls_norm || 0, leads_norm || 0);
-
+        `).run(manager_id, month, days, Math.max(0, Number(calls_norm) || 0), Math.max(0, Number(leads_norm) || 0));
         res.json({ message: 'План успешно сохранен' });
-    } catch (error) {
-        console.error('Ошибка сохранения плана:', error);
+    } catch (e) {
+        console.error('Ошибка сохранения плана:', e);
         res.status(500).json({ error: 'Ошибка сохранения плана' });
-    }
-});
-
-app.get('/api/users', (req: any, res: any) => {
-    try {
-        const users = db.prepare(`
-            SELECT 
-                u.id, 
-                u.bitrix_id, 
-                u.login, 
-                u.role,
-                u.department_id,
-                d.name as department_name
-            FROM users u
-            LEFT JOIN departments d ON u.department_id = d.id
-            WHERE u.role IN ('MANAGER', 'HEAD_OF_DEPT')
-            ORDER BY u.login ASC
-        `).all();
-        res.json(users);
-    } catch (error) {
-        console.error('Ошибка:', error);
-        res.status(500).json({ error: 'Ошибка получения пользователей' });
-    }
-});
-
-app.get('/api/departments', (req: any, res: any) => {
-    try {
-        const departments = db.prepare(`
-            SELECT 
-                d.id, 
-                d.name,
-                COUNT(u.id) as members_count
-            FROM departments d
-            LEFT JOIN users u ON u.department_id = d.id
-            GROUP BY d.id
-            ORDER BY d.id ASC
-        `).all();
-        res.json(departments);
-    } catch (error) {
-        console.error('Ошибка загрузки отделов:', error);
-        res.status(500).json({ error: 'Ошибка загрузки отделов' });
-    }
-});
-
-app.post('/api/departments', (req: any, res: any) => {
-    try {
-        const { name } = req.body;
-        if (!name || !name.trim()) {
-            return res.status(400).json({ error: 'Название отдела обязательно' });
-        }
-        const info = db.prepare('INSERT INTO departments (name) VALUES (?)').run(name.trim());
-        res.json({ id: info.lastInsertRowid, name: name.trim(), message: 'Отдел создан' });
-    } catch (error) {
-        console.error('Ошибка создания отдела:', error);
-        res.status(500).json({ error: 'Ошибка создания отдела' });
-    }
-});
-
-app.delete('/api/departments/:id', (req: any, res: any) => {
-    try {
-        const deptId = req.params.id;
-        db.transaction(() => {
-            db.prepare('UPDATE users SET department_id = NULL WHERE department_id = ?').run(deptId);
-            db.prepare('DELETE FROM departments WHERE id = ?').run(deptId);
-        })();
-        res.json({ message: 'Отдел удален' });
-    } catch (error) {
-        console.error('Ошибка удаления отдела:', error);
-        res.status(500).json({ error: 'Ошибка удаления отдела' });
-    }
-});
-
-app.put('/api/departments/:id/members', (req: any, res: any) => {
-    try {
-        const deptId = Number(req.params.id);
-        const { userIds } = req.body; 
-
-        if (!Array.isArray(userIds)) {
-            return res.status(400).json({ error: 'Ожидается массив userIds' });
-        }
-
-        db.transaction(() => {
-            db.prepare('UPDATE users SET department_id = NULL WHERE department_id = ?').run(deptId);
-            const updateStmt = db.prepare('UPDATE users SET department_id = ? WHERE id = ?');
-            for (const uid of userIds) {
-                updateStmt.run(deptId, uid);
-            }
-        })();
-
-        res.json({ message: 'Состав отдела успешно обновлен' });
-    } catch (error) {
-        console.error('Ошибка обновления состава отдела:', error);
-        res.status(500).json({ error: 'Ошибка обновления состава отдела' });
-    }
-});
-
-app.get('/api/refusal-reasons', (req: any, res: any) => {
-    try {
-        const reasons = db.prepare('SELECT * FROM refusal_reasons').all();
-        res.json(reasons);
-    } catch (error) {
-        res.status(500).json({ error: 'Ошибка загрузки причин отказов' });
-    }
-});
-
-app.post('/api/refusal-reasons', (req: any, res: any) => {
-    try {
-        const { name } = req.body;
-        if (!name) return res.status(400).json({ error: 'Название обязательно' });
-        
-        db.prepare('INSERT INTO refusal_reasons (name) VALUES (?)').run(name.trim());
-        res.json({ message: 'Причина успешно добавлена' });
-    } catch (error: any) {
-        if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-            res.status(400).json({ error: 'Такая причина уже существует' });
-        } else {
-            res.status(500).json({ error: 'Ошибка сохранения' });
-        }
-    }
-});
-
-app.delete('/api/refusal-reasons/:id', (req: any, res: any) => {
-    try {
-        db.prepare('DELETE FROM refusal_reasons WHERE id = ?').run(req.params.id);
-        res.json({ message: 'Причина удалена' });
-    } catch (error) {
-        res.status(500).json({ error: 'Ошибка удаления' });
-    }
-});
-
-app.get('/api/analytics/refusals', (req: any, res: any) => {
-    try {
-        const { startDate, endDate, base_id, manager_id } = req.query;
-        let where = ['l.refusal_reason_id IS NOT NULL'];
-        let params: any[] = [];
-
-        if (startDate) { where.push('date(l.created_at) >= ?'); params.push(startDate); }
-        if (endDate) { where.push('date(l.created_at) <= ?'); params.push(endDate); }
-        if (base_id) { where.push('l.base_id = ?'); params.push(base_id); }
-        if (manager_id) { where.push('l.manager_id = ?'); params.push(manager_id); }
-
-        const whereClause = 'WHERE ' + where.join(' AND ');
-
-        const stats = db.prepare(`
-            SELECT 
-                r.id,
-                r.name as reason_name,
-                COUNT(l.id) as count
-            FROM leads l
-            JOIN refusal_reasons r ON l.refusal_reason_id = r.id
-            ${whereClause}
-            GROUP BY r.id
-            ORDER BY count DESC
-        `).all(...params);
-        
-        res.json(stats);
-    } catch (error) {
-        console.error('Ошибка аналитики отказов:', error);
-        res.status(500).json({ error: 'Ошибка получения аналитики отказов' });
-    }
-});
-
-app.get('/api/analytics/refusals/:reason_id/details', (req: any, res: any) => {
-    try {
-        const { startDate, endDate } = req.query;
-        const reason_id = req.params.reason_id;
-        let where = ['l.refusal_reason_id = ?'];
-        let params: any[] = [reason_id];
-        
-        if (startDate) { where.push('date(l.created_at) >= ?'); params.push(startDate); }
-        if (endDate) { where.push('date(l.created_at) <= ?'); params.push(endDate); }
-        
-        const leads = db.prepare(`
-            SELECT 
-                l.bitrix_lead_id,
-                l.created_at,
-                l.segmentation as base_name,
-                COALESCE(u.login, 'ID ' || l.manager_id) as manager_name
-            FROM leads l
-            LEFT JOIN users u ON l.manager_id = u.bitrix_id
-            WHERE ${where.join(' AND ')}
-            ORDER BY l.created_at DESC
-            LIMIT 100
-        `).all(...params);
-        
-        res.json(leads);
-    } catch (error) {
-        console.error('Ошибка детализации отказов:', error);
-        res.status(500).json({ error: 'Ошибка сервера' });
-    }
-});
-
-app.get('/api/analytics/refusals/silent', (req: any, res: any) => {
-    try {
-        const { startDate, endDate } = req.query;
-        let where = ["l.refusal_reason_id IS NULL AND l.status_semantic = 'F'"];
-        let params: any[] = [];
-        
-        if (startDate) { where.push('date(l.created_at) >= ?'); params.push(startDate); }
-        if (endDate) { where.push('date(l.created_at) <= ?'); params.push(endDate); }
-
-        const stats = db.prepare(`
-            SELECT 
-                l.manager_id,
-                COALESCE(u.login, 'ID ' || l.manager_id) as manager_name,
-                COUNT(l.id) as silent_count
-            FROM leads l
-            LEFT JOIN users u ON l.manager_id = u.bitrix_id
-            WHERE ${where.join(' AND ')}
-            GROUP BY l.manager_id
-            ORDER BY silent_count DESC
-            LIMIT 5
-        `).all(...params);
-        
-        res.json(stats);
-    } catch (error) {
-        console.error('Ошибка аналитики молчунов:', error);
-        res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
 
 app.get('/api/manager/:manager_id/remainder', (req: any, res: any) => {
     try {
-        const manager_id = req.params.manager_id;
+        const managerId = req.params.manager_id;
+        const user = db.prepare('SELECT qualification FROM users WHERE bitrix_id = ?').get(managerId) as any;
+        const threshold = user?.qualification === 'ведущий' ? 59 : 44;
         const stats = db.prepare(`
-            SELECT 
-                COUNT(id) as total,
-                SUM(CASE WHEN status_id LIKE '%NEW%' THEN 1 ELSE 0 END) as import_count,
-                SUM(CASE WHEN is_quality = 1 THEN 1 ELSE 0 END) as quality_count,
-                SUM(CASE WHEN refusal_reason_id IS NOT NULL OR status_semantic = 'F' THEN 1 ELSE 0 END) as refusal_count,
-                -- Взятые в работу: в процессе, не качественные, и НЕ новые (не импорт)
-                SUM(CASE WHEN status_semantic = 'P' AND is_quality = 0 AND status_id NOT LIKE '%NEW%' THEN 1 ELSE 0 END) as in_progress_count
-            FROM leads
-            WHERE manager_id = ?
-        `).get(manager_id);
-        
-        res.json(stats || { total: 0, import_count: 0, quality_count: 0, refusal_count: 0, in_progress_count: 0 });
-    } catch (error) {
-        console.error('Ошибка остатка базы:', error);
+            SELECT
+                COUNT(l.id) as total,
+                SUM(CASE WHEN l.status_id LIKE '%NEW%' OR l.status_id LIKE '%IMPORT%' THEN 1 ELSE 0 END) as import_count,
+                SUM(CASE WHEN l.is_quality = 1 THEN 1 ELSE 0 END) as quality_count,
+                SUM(CASE WHEN l.refusal_reason_id IS NOT NULL OR l.status_semantic = 'F' THEN 1 ELSE 0 END) as refusal_count,
+                SUM(CASE WHEN l.status_semantic = 'P' AND l.is_quality = 0
+                          AND l.status_id NOT LIKE '%NEW%' AND l.status_id NOT LIKE '%IMPORT%' THEN 1 ELSE 0 END) as in_progress_count,
+                -- Недозвоны: звонки были, но ни один не дотянул до порога разговора
+                SUM(CASE WHEN l.status_semantic = 'P' AND l.status_id NOT LIKE '%NEW%'
+                          AND EXISTS (SELECT 1 FROM calls c WHERE c.owner_type = 'lead' AND c.owner_id = l.bitrix_lead_id)
+                          AND NOT EXISTS (SELECT 1 FROM calls c WHERE c.owner_type = 'lead' AND c.owner_id = l.bitrix_lead_id
+                                          AND c.direction = 'outgoing' AND c.duration_seconds >= ?)
+                         THEN 1 ELSE 0 END) as no_answer_count
+            FROM leads l
+            WHERE l.manager_id = ?
+        `).get(threshold, managerId);
+        res.json(stats || { total: 0, import_count: 0, quality_count: 0, refusal_count: 0, in_progress_count: 0, no_answer_count: 0 });
+    } catch (e) {
+        console.error('Ошибка остатка базы:', e);
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
 
 app.get('/api/manager/:manager_id/work-list', (req: any, res: any) => {
     try {
-        const manager_id = req.params.manager_id;
         const leads = db.prepare(`
-            SELECT 
-                l.bitrix_lead_id, 
-                l.segmentation as base_name, 
-                l.created_at, 
-                l.status_id,
-                COUNT(c.id) as calls_count
+            SELECT l.bitrix_lead_id,
+                COALESCE(b.name, 'Без базы') as base_name,
+                COALESCE(p.name, 'Не назначен') as product_name,
+                l.created_at, l.status_id,
+                COUNT(c.id) as calls_count,
+                MAX(c.started_at) as last_call_at
             FROM leads l
+            LEFT JOIN bases b ON l.base_id = b.id
+            LEFT JOIN products p ON b.main_product_id = p.id
             LEFT JOIN calls c ON c.owner_type = 'lead' AND c.owner_id = l.bitrix_lead_id
             WHERE l.manager_id = ?
               AND l.status_semantic = 'P'
               AND l.is_quality = 0
-              AND l.status_id NOT LIKE '%NEW%' -- Исключаем только что импортированные
+              AND l.status_id NOT LIKE '%NEW%'
+              AND l.status_id NOT LIKE '%IMPORT%'
             GROUP BY l.id
             ORDER BY l.created_at DESC
             LIMIT 100
-        `).all(manager_id);
-        
-        const workList = {
-            returns: leads.filter(l => l.status_id.toLowerCase().includes('return') || l.calls_count > 5),
-            retries: leads.filter(l => l.calls_count > 0 && l.calls_count <= 5 && !l.status_id.toLowerCase().includes('return')),
-            new_in_work: leads.filter(l => l.calls_count === 0 && !l.status_id.toLowerCase().includes('return'))
-        };
-        
-        res.json(workList);
-    } catch (error) {
-        console.error('Ошибка рабочих списков:', error);
-        res.status(500).json({ error: 'Ошибка сервера' });
-    }
-});
-app.get('/api/users/:bitrix_id/info', (req: any, res: any) => {
-    try {
-        const user = db.prepare('SELECT qualification FROM users WHERE bitrix_id = ?').get(req.params.bitrix_id) as any;
-        res.json({ qualification: user ? user.qualification : 'обычный' });
-    } catch(e) {
-        res.status(500).json({ error: 'Ошибка сервера' });
-    }
-});
+        `).all(req.params.manager_id) as any[];
 
-app.get('/api/analytics/products-and-calls', (req: any, res: any) => {
-    try {
-        const { startDate, endDate, manager_id } = req.query;
-        let where = ['l.is_quality = 1']; let params: any[] = [];
-        
-        if (startDate) { where.push('date(created_at) >= ?'); params.push(startDate); }
-        if (endDate) { where.push('date(created_at) <= ?'); params.push(endDate); }
-        if (manager_id) { where.push('manager_id = ?'); params.push(manager_id); }
-
-        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
-
-        const leadsByProduct = db.prepare(`
-            SELECT 
-                COALESCE(p.name, 'Без продукта') as product_name,
-                COUNT(l.id) as quality_leads
-            FROM leads l
-            LEFT JOIN bases b ON l.base_id = b.id
-            LEFT JOIN products p ON b.main_product_id = p.id
-            ${whereClause.replace(/created_at/g, 'l.created_at').replace(/manager_id/g, 'l.manager_id')}
-            AND l.is_quality = 1
-            GROUP BY p.id
-            ORDER BY quality_leads DESC
-        `).all(...params);
-
-        let callsWhere = []; let callsParams: any[] = [];
-        if (startDate) { callsWhere.push('date(started_at) >= ?'); callsParams.push(startDate); }
-        if (endDate) { callsWhere.push('date(started_at) <= ?'); callsParams.push(endDate); }
-        if (manager_id) { callsWhere.push('manager_id = ?'); callsParams.push(manager_id); }
-        
-        const callsWhereClause = callsWhere.length ? 'WHERE ' + callsWhere.join(' AND ') : '';
-
-        const callsStats = db.prepare(`
-            SELECT 
-                COUNT(id) as total_calls,
-                SUM(CASE WHEN owner_type IS NULL OR owner_id IS NULL THEN 1 ELSE 0 END) as unassigned_calls,
-                SUM(CASE WHEN owner_type IS NOT NULL AND owner_id IS NOT NULL THEN 1 ELSE 0 END) as assigned_calls
-            FROM calls
-            ${callsWhereClause}
-        `).get(...callsParams);
-
-        res.json({ leadsByProduct, callsStats });
-    } catch (error) {
-        console.error('Ошибка аналитики продуктов/звонков:', error);
-        res.status(500).json({ error: 'Ошибка сервера' });
-    }
-});
-
-const autoSyncUsers = async () => {
-    console.log('👥 Проверка новых сотрудников в Битрикс24...');
-    try {
-        const response = await fetch(`${process.env.API_URL}/users`, {
-            headers: { 'Authorization': `Bearer ${process.env.API_TOKEN}` }
+        const isReturn = (l: any) => String(l.status_id || '').toLowerCase().includes('return');
+        res.json({
+            returns: leads.filter(l => isReturn(l) || l.calls_count > 5),
+            retries: leads.filter(l => l.calls_count > 0 && l.calls_count <= 5 && !isReturn(l)),
+            new_in_work: leads.filter(l => l.calls_count === 0 && !isReturn(l))
         });
-        const data = await response.json();
-        
-        const defaultPassword = await bcrypt.hash('crm12345', 10);
-        const checkBitrixId = db.prepare('SELECT id FROM users WHERE bitrix_id = ?');
-        const checkLogin = db.prepare('SELECT id FROM users WHERE login = ?');
-        const insertUser = db.prepare('INSERT INTO users (bitrix_id, login, password_hash, role) VALUES (?, ?, ?, ?)');
-
-        let added = 0;
-
-        if (data.ok && data.users) {
-            const transliterate = (text: string) => {
-                const ru = 'А-а-Б-б-В-в-Г-г-Д-д-Е-е-Ё-ё-Ж-ж-З-з-И-и-Й-й-К-к-Л-л-М-м-Н-н-О-о-П-п-Р-р-С-с-Т-т-У-у-Ф-ф-Х-х-Ц-ц-Ч-ч-Ш-ш-Щ-щ-Ъ-ъ-Ы-ы-Ь-ь-Э-э-Ю-ю-Я-я'.split('-');
-                const en = 'A-a-B-b-V-v-G-g-D-d-E-e-E-e-Zh-zh-Z-z-I-i-Y-y-K-k-L-l-M-m-N-n-O-o-P-p-R-r-S-s-T-t-U-u-F-f-Kh-kh-Ts-ts-Ch-ch-Sh-sh-Sch-sch---Y-y---E-e-Yu-yu-Ya-ya'.split('-');
-                let res = '';
-                for(let i = 0; i < text.length; i++) {
-                    let s = text.charAt(i), n = ru.indexOf(s);
-                    res += (n >= 0) ? en[n] : s;
-                }
-                return res.toLowerCase().replace(/[^a-z0-9]/g, '.').replace(/\.+/g, '.').replace(/(^\.|\.$)/g, '');
-            };
-
-            db.transaction((usersList) => {
-                for (const u of usersList) {
-                    if (!u.id) continue; 
-                    if (checkBitrixId.get(u.id)) continue;
-
-                    let baseName = u.name ? transliterate(u.name) : '';
-                    if (!baseName || baseName.length === 0) {
-                        baseName = `user_${u.id}`;
-                    }
-                    
-                    let login = baseName;
-                    if (checkLogin.get(login)) {
-                        login = `${login}.${u.id}`;
-                    }
-
-                    insertUser.run(u.id, login, defaultPassword, 'MANAGER');
-                    added++;
-                }
-            })(data.users);
-        }
-
-        const info = db.prepare(`
-            INSERT INTO users (bitrix_id, login, password_hash, role)
-            SELECT DISTINCT manager_id, 'system_bot_' || manager_id, ?, 'MANAGER'
-            FROM (
-                SELECT manager_id FROM leads WHERE manager_id IS NOT NULL
-                UNION
-                SELECT manager_id FROM deals WHERE manager_id IS NOT NULL
-                UNION
-                SELECT manager_id FROM calls WHERE manager_id IS NOT NULL
-            )
-            WHERE manager_id NOT IN (SELECT bitrix_id FROM users WHERE bitrix_id IS NOT NULL)
-        `).run(defaultPassword);
-
-        if (added > 0 || info.changes > 0) {
-            console.log(`✅ Обновлена база сотрудников! Из API добавлено: ${added}, Восстановлено системных/удаленных: ${info.changes}`);
-        }
-    } catch (error) {
-        console.error('❌ Ошибка авто-синхронизации пользователей:', error);
-    }
-};
-
-app.get('/api/analytics/drilldown', (req: any, res: any) => {
-    try {
-        const { startDate, endDate, manager_id, base_id, metric } = req.query;
-
-        if (metric === 'quality_leads') {
-            let where = ['l.is_quality = 1'];
-            let params: any[] = [];
-            if (startDate) { where.push('date(l.created_at) >= ?'); params.push(startDate); }
-            if (endDate) { where.push('date(l.created_at) <= ?'); params.push(endDate); }
-            if (manager_id) { where.push('l.manager_id = ?'); params.push(manager_id); }
-            if (base_id) { where.push('l.base_id = ?'); params.push(base_id); }
-
-            const q = `
-                SELECT l.bitrix_lead_id as b24_id, l.created_at, 'lead' as type, b.name as base_name, u.login as manager_name
-                FROM leads l
-                LEFT JOIN bases b ON l.base_id = b.id
-                LEFT JOIN users u ON l.manager_id = u.bitrix_id
-                WHERE ${where.join(' AND ')}
-                ORDER BY l.created_at DESC LIMIT 100
-            `;
-            res.json(db.prepare(q).all(...params));
-
-        } else if (metric === 'paid_deals') {
-            let where = ['d.amount > 0'];
-            let params: any[] = [];
-            if (startDate) { where.push('date(d.created_at) >= ?'); params.push(startDate); }
-            if (endDate) { where.push('date(d.created_at) <= ?'); params.push(endDate); }
-            if (manager_id) { where.push('d.manager_id = ?'); params.push(manager_id); }
-            if (base_id) { where.push('l.base_id = ?'); params.push(base_id); }
-
-            const q = `
-                SELECT d.bitrix_deal_id as b24_id, d.created_at, 'deal' as type, d.amount, l.bitrix_lead_id as lead_id, b.name as base_name, u.login as manager_name
-                FROM deals d
-                LEFT JOIN leads l ON d.lead_id = l.bitrix_lead_id
-                LEFT JOIN bases b ON l.base_id = b.id
-                LEFT JOIN users u ON d.manager_id = u.bitrix_id
-                WHERE ${where.join(' AND ')}
-                ORDER BY d.created_at DESC LIMIT 100
-            `;
-            res.json(db.prepare(q).all(...params));
-        } else {
-            res.json([]);
-        }
     } catch (e) {
-        console.error('Ошибка детализации:', e);
-        res.status(500).json({ error: 'Ошибка детализации' });
+        console.error('Ошибка рабочих списков:', e);
+        res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
 
-app.get('/api/data-issues', (req: any, res: any) => {
+app.get('/api/sync-status', (req: any, res: any) => {
     try {
-        const issues = {
-            noBase: db.prepare("SELECT bitrix_lead_id as id, created_at, manager_id FROM leads WHERE base_id IS NULL AND status_id NOT LIKE '%NEW%' LIMIT 50").all(),
-            noManager: db.prepare("SELECT bitrix_lead_id as id, created_at FROM leads WHERE manager_id IS NULL LIMIT 50").all(),
-            dealsNoInn: db.prepare("SELECT bitrix_deal_id as id, created_at, amount FROM deals WHERE inn IS NULL AND amount > 0 LIMIT 50").all()
-        };
-        
-        const total = issues.noBase.length + issues.noManager.length + issues.dealsNoInn.length;
-        res.json({ total, details: issues });
-    } catch (error) {
-        console.error('Ошибка проверки качества данных:', error);
-        res.status(500).json({ error: 'Ошибка проверки качества данных' });
+        const entities = ['calls', 'leads', 'deals', 'segments'];
+        const items = entities.map(entity => {
+            const last = db.prepare(`
+                SELECT ts, status, processed, message FROM sync_log
+                WHERE entity = ? ORDER BY id DESC LIMIT 1
+            `).get(entity) as any;
+            const success = db.prepare(`
+                SELECT ts FROM sync_log WHERE entity = ? AND status = 'success'
+                ORDER BY id DESC LIMIT 1
+            `).get(entity) as any;
+            return {
+                entity,
+                last_ts: last?.ts ?? null,
+                last_status: last?.status ?? 'never',
+                processed: last?.processed ?? 0,
+                message: last?.message ?? '',
+                last_success_ts: success?.ts ?? null,
+                data_incomplete: String(last?.message || '').includes('dataComplete=false')
+            };
+        });
+        const pending = db.prepare(`
+            SELECT COUNT(*) as cnt FROM deals
+            WHERE products_list IS NULL AND (amount > 0 OR stage_semantic IN ('S', 'P'))
+        `).get() as any;
+        res.json({
+            items,
+            products_pending: pending?.cnt ?? 0,
+            incomplete: items.some(i => i.data_incomplete || !i.last_success_ts) || (pending?.cnt ?? 0) > 0
+        });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка получения состояния синхронизации' });
     }
 });
 
-const runBackgroundSync = async () => {
-    console.log('🔄 Запуск фоновой синхронизации данных...');
-    try {
-        await autoSyncUsers();
-        await fetch('http://localhost:3000/api/sync-calls');
-        await fetch('http://localhost:3000/api/sync-segments');
-        await fetch('http://localhost:3000/api/sync-leads');
-        await fetch('http://localhost:3000/api/sync-deals');
-        await fetch('http://localhost:3000/api/calculate-daily-stats'); 
-        console.log('✅ Фоновая синхронизация завершена успешно');
-    } catch (error) {
-        console.error('❌ Ошибка фоновой синхронизации:', error);
-    }
-};
+app.get('/api/health', (req: any, res: any) => {
+    res.json({ ok: true, ts: new Date().toISOString() });
+});
 
+app.get('/api/okved', (req: any, res: any) => {
+    try {
+        res.json(db.prepare('SELECT code, name FROM okved ORDER BY code ASC').all());
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка загрузки ОКВЭД' });
+    }
+});
+
+app.post('/api/okved', (req: any, res: any) => {
+    const code = String(req.body.code || '').trim();
+    const name = req.body.name ? String(req.body.name).trim() : null;
+    if (!code) return res.status(400).json({ error: 'Код ОКВЭД обязателен' });
+    try {
+        db.prepare(`
+            INSERT INTO okved (code, name) VALUES (?, ?)
+            ON CONFLICT(code) DO UPDATE SET name = COALESCE(excluded.name, okved.name)
+        `).run(code, name);
+        res.json({ message: 'ОКВЭД сохранён' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка сохранения' });
+    }
+});
+
+app.delete('/api/okved/:code', (req: any, res: any) => {
+    try {
+        db.prepare('DELETE FROM okved WHERE code = ?').run(req.params.code);
+        res.json({ message: 'ОКВЭД удалён' });
+    } catch (e) {
+        res.status(500).json({ error: 'Ошибка удаления' });
+    }
+});
+
+
+registerSyncRoutes(app, authenticateToken); 
+registerAnalyticsRoutes(app);                
 setTimeout(() => {
     runBackgroundSync();
-    setInterval(runBackgroundSync, 15 * 60 * 1000);
+    setInterval(runBackgroundSync, SYNC_INTERVAL_MIN * 60 * 1000);
 }, 10000);
 
-app.listen(3000, () => {
-    console.log('Сервер запущен на http://localhost:3000');
+app.get('/api/okved/load-names', async (req: any, res: any) => {
+    try {
+        console.log('🌐 Загрузка справочника ОКВЭД...');
+        const response = await fetch('https://raw.githubusercontent.com/epogrebniy/okved/master/okved2.json');
+        if (!response.ok) {
+            return res.status(500).json({ error: `Не удалось скачать справочник: HTTP ${response.status}` });
+        }
+        const data = await response.json();
+        if (!Array.isArray(data)) {
+            return res.status(500).json({ error: 'Неверный формат справочника' });
+        }
+
+        const stmt = db.prepare(`
+            INSERT INTO okved (code, name) VALUES (?, ?)
+            ON CONFLICT(code) DO UPDATE SET name = COALESCE(excluded.name, okved.name)
+        `);
+
+        let updated = 0;
+        let inserted = 0;
+        
+        db.transaction(() => {
+            for (const item of data) {
+                if (!item.code || !item.name) continue;
+                const existing = db.prepare('SELECT code FROM okved WHERE code = ?').get(item.code);
+                stmt.run(item.code, item.name);
+                if (existing) updated++;
+                else inserted++;
+            }
+        })();
+
+        console.log(`✅ ОКВЭД обновлен: добавлено ${inserted}, обновлено ${updated}`);
+        res.json({
+            message: `Загружено: добавлено ${inserted}, обновлено ${updated} кодов`,
+            inserted,
+            updated,
+            total: data.length
+        });
+    } catch (e: any) {
+        console.error('❌ Ошибка загрузки ОКВЭД:', e.message);
+        res.status(500).json({ error: `Ошибка: ${e.message}` });
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`🚀 Сервер запущен на http://localhost:${PORT}`);
+    console.log(`⏱️ Автосинхронизация каждые ${SYNC_INTERVAL_MIN} мин`);
+    if (!process.env.DADATA_TOKEN) console.warn('⚠️ DADATA_TOKEN не задан — ОКВЭД обогащаться не будет');
 });
